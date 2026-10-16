@@ -74,7 +74,8 @@ import { createContext, createRenderTarget, bindTarget, drawFullscreen,
 import { SCENE_FS, SCENE_VS, L_SURFACE, L_CAUSTICS, L_RAYS, L_SNOW, L_VIGNETTE }
   from './src/render/shaders/scene.js';
 import { CreatureRenderer } from './src/render/creatures.js';
-import { makeCreature } from './src/core/creatures.js';
+import { Flock } from './src/core/creatures.js';
+import { createTabSource } from './src/core/tabs.js';
 import { paletteFor } from './src/core/theme.js';
 
 const THEME = ${JSON.stringify(args.theme)};
@@ -158,24 +159,34 @@ void main() {
 const compositeProg = new Program(gl, COMPOSITE_FS, SCENE_VS);
 const creatureRenderer = new CreatureRenderer(gl);
 
-// 一批假生物。id 稳定 → 外观稳定，方便对照两次改动的差异。
-const creatures = [];
-const titles = ['图表', '文档', '邮件', '代码', '视频', '购物', '新闻', '音乐',
-                '日历', '地图', '相册', '笔记', '终端', '论文'];
-for (let i = 0; i < COUNT; i++) {
-  creatures.push(makeCreature({
-    id: 1000 + i * 137,
-    tabId: 1000 + i * 137,
-    title: titles[i % titles.length],
-    pinned: i < 2,
-    audible: i === 3,
-    discarded: i === 5 || i === 9,
-    active: i === 0,
-    index: i,
-  }));
+// 生物来自**标签页**。非扩展环境下 createTabSource() 会自动退回演示数据，
+// 所以这个预览在浏览器里和在扩展里跑的是同一条代码路径。
+// 诊断对象必须**在所有 await 之前**建好 —— 下面的 loadTabs 是顶层 await，
+// 而它要往这里写东西。放在文件末尾会在扩展加载时直接抛 undefined。
+window.__aqua = {
+  ready: false, frames: 0, renderer: ctx.renderer, software: ctx.software,
+  floatTargets: ctx.floatTargets, creatures: 0, tabs: 0, states: null,
+};
+
+const tabSource = createTabSource();
+const flock = new Flock({ maxCreatures: COUNT });
+let creatures = [];
+
+async function loadTabs() {
+  const all = await tabSource.list();
+  const tabs = all.slice(0, COUNT);
+  // 推进到渐入完成 —— 静态预览不该看到刚出生的半透明生物
+  for (let k = 0; k < 80; k++) flock.sync(tabs, 0.05);
+  creatures = flock.list.slice();
+  window.__aqua.tabs = tabs.length;
+  window.__aqua.states = {
+    pinned: tabs.filter((t) => t.pinned).length,
+    audible: tabs.filter((t) => t.audible).length,
+    discarded: tabs.filter((t) => t.discarded).length,
+    titles: tabSource.hasTitles,
+  };
 }
-// 全部渐显完成
-for (const c of creatures) c.fade = 1;
+await loadTabs();
 
 function frame() {
   resize();
@@ -222,12 +233,28 @@ function frame() {
   drawFullscreen(gl);
 
   window.__aqua.frames++;
+
+  // 状态 → 外观的映射表。用眼睛比较尺寸差太不可靠，直接对数据。
+  if (window.__aqua.frames === 2) {
+    const rows = creatures.map((c) =>
+      [
+        'PADF'.split('').map((f, i) =>
+          [c.pinned, c.audible, c.discarded, c.active][i] ? f : '.',
+        ).join(''),
+        'energy=' + c.energy.toFixed(2),
+        'scale=' + c.scale.toFixed(2),
+        c.shape,
+      ].join(' '),
+    );
+    console.log('[states]');
+    for (const r of rows) console.log('  ' + r);
+  }
+
   if (window.__aqua.frames >= 3) window.__aqua.ready = true;
   requestAnimationFrame(frame);
 }
 
-window.__aqua = { ready: false, frames: 0, renderer: ctx.renderer, software: ctx.software,
-                  floatTargets: ctx.floatTargets, creatures: creatures.length };
+
 requestAnimationFrame(frame);
 `;
 }

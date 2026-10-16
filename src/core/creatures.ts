@@ -33,6 +33,7 @@
  */
 
 import { SHAPES, type ShapeName } from '../render/creature-mesh.js';
+import type { TabInfo } from './tabs.js';
 
 /** 缸内水域范围。生物在这个矩形里活动。 */
 export const SWIM_BOUNDS = {
@@ -63,8 +64,10 @@ export interface Creature {
   wander: number;
   /** 速度倍率 */
   speed: number;
-  /** 体型倍率 */
+  /** 体型倍率（= baseScale × 固定标签页加成），每次同步重算 */
   scale: number;
+  /** 体型的基础倍率，属于身份 */
+  baseScale: number;
 
   /** 亮度倍率。休眠的标签页会很低。 */
   energy: number;
@@ -139,15 +142,18 @@ export interface CreatureSeedInput {
   audible: boolean;
   discarded: boolean;
   active: boolean;
-  /** 这只生物在画面里的序号，用于摊开初始位置 */
-  index: number;
 }
 
 /**
  * 由标签页信息造一只生物。
  *
- * 外观只取决于 id（稳定），状态（亮度、体型加成）取决于标签页状态（实时）。
- * 这条分界很重要：状态变化时生物**不该换一个样子**，只该变亮变暗。
+ * ## 「身份」与「状态」的分界
+ *
+ * 这只生物**长什么样、在哪里、怎么游**，全部只取决于 id —— 是**身份**。
+ * **亮度、体型加成**取决于标签页当前的状态 —— 是**状态**。
+ *
+ * 这条分界很重要：一个标签页从休眠被唤醒时，生物**不该换一个样子**，
+ * 只该变亮。所以身份字段只在创建时算一次，状态字段每次同步都重算。
  */
 export function makeCreature(input: CreatureSeedInput): Creature {
   const { id } = input;
@@ -177,6 +183,7 @@ export function makeCreature(input: CreatureSeedInput): Creature {
     id,
     tabId: input.tabId,
     shape,
+    // ——— 以下全部是「身份」，只取决于 id，创建后不再变 ———
     homeX,
     homeY,
     w1,
@@ -187,17 +194,44 @@ export function makeCreature(input: CreatureSeedInput): Creature {
     p3: pick(id, 13, 0, Math.PI * 2),
     wander,
     speed: pick(id, 14, 0.75, 1.35),
-    scale: pick(id, 15, 0.85, 1.15) * (1 + pinnedBias * 0.45),
-    energy,
+    scale: pick(id, 15, 0.85, 1.15) * (1 + pinnedBias * 0.45), // 创建时先给一个值
     // 大约每 7 只里有 1 只带点缀色
     alt: hash01(id, 21) < 0.14,
+
+    // ——— 以下是「状态」，每次同步都重算 ———
+    energy,
     fade: 0,
+    baseScale: pick(id, 15, 0.85, 1.15),
     title: input.title,
     pinned: input.pinned,
     audible: input.audible,
     discarded: input.discarded,
     active: input.active,
   };
+}
+
+/**
+ * 刷新一只生物的**状态**部分。
+ *
+ * 注意这里绝对不碰身份字段（shape / homeX / w1…）。
+ * 碰了的话，标签页一出声生物就会换个位置重新出现，那看起来像 bug。
+ */
+export function applyTabState(c: Creature, tab: TabInfo): void {
+  c.title = tab.title;
+  c.pinned = tab.pinned;
+  c.audible = tab.audible;
+  c.discarded = tab.discarded;
+  c.active = tab.active;
+
+  // 固定标签页体型更大、活动范围更窄（有领地感）
+  c.scale = c.baseScale * (tab.pinned ? 1.45 : 1);
+
+  // 亮度：休眠的非常暗，出声的明显更亮
+  let energy = 1;
+  if (tab.discarded) energy = 0.22;
+  else if (!tab.active && hash01(c.id, 77) < 0.35) energy = 0.62;
+  if (tab.audible) energy = 1.55;
+  c.energy = energy;
 }
 
 /** 位置与朝向。纯函数 —— 同样的 (creature, t) 永远得到同样的结果。 */
@@ -245,4 +279,127 @@ export function poseAt(c: Creature, t: number, out: Pose2D): Pose2D {
   out.dx = dx;
   out.dy = dy;
   return out;
+}
+
+// ————————————————————————————————————————————————————————————
+// 生物群
+// ————————————————————————————————————————————————————————————
+
+/**
+ * 一缸里最多同时显示多少只。
+ *
+ * 标签页可以有几十个，但一片海里挤满生物就既不美、也看不清。
+ * 超出的按优先级筛掉（固定 > 出声 > 当前 > 靠前）。
+ */
+export const DEFAULT_MAX_CREATURES = 18;
+
+/** 渐入 / 渐出秒数。渐出比渐入慢 —— 消失应该是「飘散」而不是「闪没」。 */
+const FADE_IN = 0.9;
+const FADE_OUT = 1.6;
+
+/** 标签页留下来的优先级：越大越该被显示。 */
+function tabPriority(t: TabInfo): number {
+  let p = 0;
+  if (t.pinned) p += 1000;
+  if (t.audible) p += 500;
+  if (t.active) p += 250;
+  // 靠前的标签页略占优（用户的注意力本来就在左边）
+  p += Math.max(0, 60 - t.index);
+  return p;
+}
+
+export interface FlockOptions {
+  maxCreatures?: number;
+  /**
+   * 只显示当前窗口的标签页。默认 true ——
+   * 把别的窗口的标签页也混进来，画面会变成一个无法解释的动物园。
+   */
+  currentWindowOnly?: boolean;
+}
+
+/**
+ * 标签页 ↔ 生物的双向映射。
+ *
+ * 每帧调一次 `sync`。它做三件事：
+ *
+ *   1. 新标签页 → 造一只生物（fade 从 0 开始，渐入）
+ *   2. 已有标签页 → 刷新状态（亮度、体型），**绝不碰身份**
+ *   3. 消失的标签页 → 渐出，归零后移除
+ *
+ * 第 2 条里的「绝不碰身份」是这一层最容易写错的地方：一旦在刷新状态时
+ * 顺手改动了位置或路径参数，标签页一出声生物就会跳一下，看起来像 bug。
+ */
+export class Flock {
+  private readonly items: Creature[] = [];
+  private readonly byTab = new Map<number, Creature>();
+  private readonly max: number;
+
+  constructor(opts: FlockOptions = {}) {
+    this.max = Math.max(1, opts.maxCreatures ?? DEFAULT_MAX_CREATURES);
+  }
+
+  get list(): readonly Creature[] {
+    return this.items;
+  }
+
+  get count(): number {
+    return this.items.length;
+  }
+
+  byTabId(tabId: number): Creature | undefined {
+    return this.byTab.get(tabId);
+  }
+
+  /** 同步一次。`dt` 是距上一帧的秒数，用于渐入渐出。 */
+  sync(tabs: readonly TabInfo[], dt: number): void {
+    // ——— 挑出该显示的标签页 ———
+    const ranked = [...tabs].sort((a, b) => tabPriority(b) - tabPriority(a));
+    const shown = new Set<number>();
+    for (const t of ranked) {
+      if (shown.size >= this.max) break;
+      shown.add(t.id);
+    }
+
+    // ——— 新建与刷新 ———
+    for (const tab of tabs) {
+      if (!shown.has(tab.id)) continue;
+      let c = this.byTab.get(tab.id);
+      if (!c) {
+        c = makeCreature({
+          id: tab.id,
+          tabId: tab.id,
+          title: tab.title,
+          pinned: tab.pinned,
+          audible: tab.audible,
+          discarded: tab.discarded,
+          active: tab.active,
+        });
+        this.byTab.set(tab.id, c);
+        this.items.push(c);
+      }
+      applyTabState(c, tab);
+    }
+
+    // ——— 渐入 / 渐出 ———
+    const step = Math.max(0, Math.min(dt, 0.25)); // 掉帧时不要让渐入跳过去
+    for (let i = this.items.length - 1; i >= 0; i--) {
+      const c = this.items[i] as Creature;
+      if (shown.has(c.tabId)) {
+        c.fade = Math.min(1, c.fade + step / FADE_IN);
+      } else {
+        c.fade -= step / FADE_OUT;
+        if (c.fade <= 0) {
+          c.fade = 0;
+          this.byTab.delete(c.tabId);
+          this.items.splice(i, 1);
+        }
+      }
+    }
+  }
+
+  /** 清空。切换数据源时用。 */
+  clear(): void {
+    this.items.length = 0;
+    this.byTab.clear();
+  }
 }
