@@ -91,6 +91,16 @@ export class AquariumRunner {
   private pointer: { x: number; y: number } | null = null;
   private hovered: Creature | null = null;
 
+  /**
+   * 累计「因为点击而切换标签页」的次数，以及最后一次切的 id。
+   *
+   * 存在的理由：这一版最核心的能力是「点一只生物切过去」，
+   * 而无头环境里没法用眼睛确认。有了这个计数，验收脚本就能
+   * 真的点一下然后断言它发生了 —— 而不是只验到「生物画出来了」。
+   */
+  private activations = 0;
+  private lastActivatedTabId = -1;
+
   /** 标签页列表需要重查。事件可能短时间连发，所以配一个节流。 */
   private tabsDirty = true;
   private lastTabsRefresh = 0;
@@ -255,6 +265,8 @@ export class AquariumRunner {
     const hit = this.pickAt(coord.x, coord.y);
     const conf = this.conf;
     if (hit && conf?.clickToSwitch && hit.tabId >= 0 && this.tabSource) {
+      this.activations++;
+      this.lastActivatedTabId = hit.tabId;
       void this.tabSource.activate(hit.tabId).catch(() => {
         /* 标签页可能刚被关掉 */
       });
@@ -264,6 +276,22 @@ export class AquariumRunner {
 
   get hoveredCreature(): Creature | null {
     return this.hovered;
+  }
+
+  /**
+   * 立即算出 (clientX, clientY) 命中哪只生物。
+   *
+   * ⚠️ 悬停提示必须用这个，不能用 `hoveredCreature` ——
+   * 后者是在**下一帧的循环里**才算出来的。指针事件处理函数里读它，
+   * 拿到的是上一帧的结果：鼠标快速划过时提示会慢一拍，
+   * 而第一次移动时干脆是空的（那时循环还没跑过）。
+   *
+   * 位置本身有一帧的延迟是无所谓的（鱼移动得很慢），
+   * 但「有没有命中」必须是即时的。
+   */
+  hoverAt(clientX: number, clientY: number): Creature | null {
+    const coord = this.toTank(clientX, clientY);
+    return coord ? this.pickAt(coord.x, coord.y) : null;
   }
 
   // ————————————————————————————————————————————————————————————
@@ -361,6 +389,22 @@ export class AquariumRunner {
       creatures: this.flock?.count ?? 0,
       hasTitles: this.hasTitles,
       theme: this.conf?.theme ?? null,
+      // 验收脚本靠这几项算出该点哪里、以及点击有没有生效
+      tankRect: this.renderer ? [...this.renderer.tankRect] : null,
+      creaturePoses: this.renderer
+        ? this.renderer.poses.map((p, i) => {
+            const c = this.flock?.list[i];
+            return {
+              x: Number(p.x.toFixed(4)),
+              y: Number(p.y.toFixed(4)),
+              tabId: c?.tabId ?? -1,
+              fade: Number((c?.fade ?? 0).toFixed(3)),
+              hasTitle: !!(c?.title && c.title.length > 0),
+            };
+          })
+        : [],
+      activations: this.activations,
+      lastActivatedTabId: this.lastActivatedTabId,
       renderer: this.renderer?.info.renderer ?? null,
       software: this.renderer?.info.software ?? false,
       fps: this.fps,

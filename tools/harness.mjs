@@ -139,6 +139,7 @@ export async function capture(opts) {
     keepAnimating = false,
     clicks = [],
     evalAfter = [],
+    readExtra = null,
   } = opts;
 
   // 传入 profileDir 可以跨多次 capture 复用同一个浏览器配置目录 ——
@@ -438,6 +439,7 @@ export async function capture(opts) {
           actionSeq: a.actionSeq ?? 0, journal: a.journal ?? 0, nutrients: a.nutrients ?? null,
           diverged: a.diverged === true, error: a.error || null,
           aqua: a,
+          extra: ${readExtra ? `(() => { try { return ${readExtra}; } catch (e) { return String(e); } })()` : 'null'},
           probe: (() => {
             const el = document.elementFromPoint(500, 400);
             const cv = document.getElementById('tank');
@@ -463,6 +465,7 @@ export async function capture(opts) {
         nutrients: v.nutrients ?? null,
         probe: v.probe ?? null,
         aqua: v.aqua ?? null,
+        extra: v.extra ?? null,
       };
     }
 

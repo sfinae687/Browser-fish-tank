@@ -154,6 +154,8 @@ export class TankRenderer {
   private readonly creatureRenderer: CreatureRenderer;
 
   private disposed = false;
+  /** 最近一帧的缸矩形。验收脚本要用它把缸内坐标换算成屏幕坐标。 */
+  private lastRect: [number, number, number, number] = [0, 0, 1, 1];
 
   constructor(canvas: HTMLCanvasElement, opts: { alpha?: boolean } = {}) {
     this.canvas = canvas;
@@ -204,6 +206,16 @@ export class TankRenderer {
     return this.creatureRenderer.pick(x, y, list);
   }
 
+  /** 最近一帧的生物姿态（缸内坐标），与传入顺序一致。 */
+  get poses(): readonly { x: number; y: number }[] {
+    return this.creatureRenderer.poses;
+  }
+
+  /** 最近一帧的缸矩形 [x, y, w, h]（uv）。 */
+  get tankRect(): readonly [number, number, number, number] {
+    return this.lastRect;
+  }
+
   /** 画一帧。调用方负责先把 canvas 尺寸设好（见 `resizeToDisplay`）。 */
   render(frame: TankFrame): void {
     if (this.disposed) return;
@@ -215,6 +227,7 @@ export class TankRenderer {
 
     this.ensureSize(w, h);
     const rect = computeTankRect(frame.framing, frame.zoom, frame.anchorY, aspect);
+    this.lastRect = rect;
 
     // ——————— 1. 水体 ———————
     let mask = 0;

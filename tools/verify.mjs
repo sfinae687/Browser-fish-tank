@@ -318,9 +318,89 @@ async function checkTabsToCreatures() {
   void status;
   ok('状态行已渲染');
 
-  // 没有 tabs 权限时，「显示标签页标题」的入口应该出现 ——
-  // 静默地什么都不显示是最糟的失败方式
-  ok('（手动检查）没授权时应出现「显示标签页标题」按钮');
+  // ——— 悬停显示标题 · 点击切换标签页 ———
+  //
+  // 这两件事是这一版最核心的浏览器特色，也是最该有端到端检查的地方：
+  // 单元测试验的是「映射逻辑对不对」，验不了「在真实页面里，
+  // 指针落在生物身上时提示到底出不出来」。
+  //
+  // 做法：从 __aqua 里读出生物的缸内坐标和缸矩形，换算成屏幕坐标，
+  // 然后**真的派发一次 pointermove 和一次 click**。
+  // evalAfter 写的东西不在 __aqua 里，所以用 readExtra 单独读回来
+  const readback = await capture({
+    url,
+    out: path.join(SHOTS, 'verify-hover.png'),
+    loadExtension: DIST,
+    width: 1280,
+    height: 800,
+    settleMs: 900,
+    keepAnimating: true,
+    evalAfter: [
+      `(async () => {
+        const canvas = document.getElementById('tank');
+        const run = async () => {
+          const a = window.__aqua;
+          const box = canvas.getBoundingClientRect();
+          const tr = a && a.tankRect;
+          const poses = (a && a.creaturePoses) || [];
+          const vis = poses.filter((p) => p.fade > 0.5 && p.tabId >= 0);
+          if (!tr || !vis.length) return null;
+          const p = vis[0];
+          const cx = box.left + (tr[0] + p.x * tr[2]) * box.width;
+          const cy = box.top + (tr[1] + p.y * tr[3]) * box.height;
+          return { p, cx, cy };
+        };
+        const hit = await run();
+        if (!hit) { window.__probeResult = { ok: false }; return; }
+        const { p, cx, cy } = hit;
+
+        canvas.dispatchEvent(new PointerEvent('pointermove',
+          { clientX: cx, clientY: cy, bubbles: true }));
+        await new Promise((r) => setTimeout(r, 350));
+        const tip = document.getElementById('tip');
+        const tipShown = !tip.hidden;
+        const tipText = tip.textContent;
+
+        const before = window.__aqua.activations || 0;
+        canvas.dispatchEvent(new MouseEvent('click',
+          { clientX: cx, clientY: cy, bubbles: true }));
+        await new Promise((r) => setTimeout(r, 400));
+
+        window.__probeResult = {
+          ok: true, cx: Math.round(cx), cy: Math.round(cy),
+          tabId: p.tabId, hasTitle: p.hasTitle,
+          tipShown, tipText,
+          activationsBefore: before,
+          activationsAfter: window.__aqua.activations || 0,
+          lastTabId: window.__aqua.lastActivatedTabId,
+        };
+      })()`,
+    ],
+    // 把页面变量一起读回来
+    readExtra: 'window.__probeResult',
+  });
+
+  const probe = readback.world?.extra ?? null;
+  if (!probe || !probe.ok) {
+    bad(`交互探针没跑起来（${JSON.stringify(probe)}）`);
+    return;
+  }
+
+  ok(`算出第一只可见生物在屏幕 (${probe.cx}, ${probe.cy})，标签页 id=${probe.tabId}`);
+
+  if (probe.tipShown) {
+    ok(`悬停时提示出现了：「${String(probe.tipText).slice(0, 40)}」`);
+  } else if (!probe.hasTitle) {
+    warn('悬停没有提示 —— 但没有 tabs 权限时这是预期行为（生物仍然可见可点）');
+  } else {
+    bad('有标题权限但悬停没有出现提示 —— 接线断了');
+  }
+
+  if (probe.activationsAfter > probe.activationsBefore) {
+    ok(`点击触发了标签页切换（id=${probe.lastTabId}）`);
+  } else {
+    bad('点击没有触发标签页切换');
+  }
 }
 
 async function checkOverlayRender() {

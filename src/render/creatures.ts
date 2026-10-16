@@ -247,6 +247,14 @@ export class CreatureRenderer {
   }
 
   /**
+   * 这一帧的姿态，按传入顺序。验收脚本据此算出「该点哪里」——
+   * 让「点击切换标签页」这件事可以被自动验证，而不是只能靠人眼。
+   */
+  get poses(): readonly Pose2D[] {
+    return this.lastPoses;
+  }
+
+  /**
    * 找出缸内坐标 (x, y) 落在哪只生物身上。
    *
    * 判定半径按体型走（大鱼更好点），并且有一个下限 ——

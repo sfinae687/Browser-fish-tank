@@ -121,7 +121,9 @@ async function main(): Promise<void> {
   // ——— 悬停：显示标签页标题 ———
   canvas.addEventListener('pointermove', (e) => {
     runner.setPointer(e.clientX, e.clientY);
-    const c = runner.hoveredCreature;
+    // 用 hoverAt 而不是 hoveredCreature：后者要等下一帧的循环才算出来，
+    // 在事件处理函数里读它永远是慢一拍的
+    const c = runner.hoverAt(e.clientX, e.clientY);
     if (!c || !c.title) {
       tip.hidden = true;
       return;
