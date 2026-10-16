@@ -58,6 +58,13 @@ export class CreatureRenderer {
   /** 复用的脊柱缓冲，避免每帧分配 */
   private readonly spine = new Float32Array(MAX_SPINE_POINTS * 2);
   readonly stats = { creatures: 0, draws: 0 };
+  /**
+   * 这一帧算出来的姿态，按传入顺序。
+   *
+   * 命中判定要用它 —— 点击落在哪只生物上，必须和**画面上看到的那一只**
+   * 一致，所以只能拿渲染真正用过的姿态，不能另算一遍。
+   */
+  private readonly lastPoses: Pose2D[] = [];
 
   constructor(gl: GL) {
     this.gl = gl;
@@ -105,7 +112,8 @@ export class CreatureRenderer {
     this.stats.draws = 0;
 
     // 准备一遍：把每只生物的姿态算好，避免两个 pass 各算一次
-    const poses: Pose2D[] = [];
+    const poses: Pose2D[] = this.lastPoses;
+    poses.length = 0;
     for (const c of list) {
       const pose: Pose2D = { x: 0, y: 0, dx: 1, dy: 0 };
       poseAt(c, p.time, pose);
@@ -236,6 +244,32 @@ export class CreatureRenderer {
       this.spine[i * 2 + 1] = pose.y + pose.dy * along + ny * wave;
     }
     return segs;
+  }
+
+  /**
+   * 找出缸内坐标 (x, y) 落在哪只生物身上。
+   *
+   * 判定半径按体型走（大鱼更好点），并且有一个下限 ——
+   * 小鱼用纯几何半径的话根本点不中。
+   */
+  pick(x: number, y: number, list: readonly Creature[]): Creature | null {
+    const poses = this.lastPoses;
+    let best: Creature | null = null;
+    let bestD = Infinity;
+    for (let i = 0; i < list.length && i < poses.length; i++) {
+      const pose = poses[i] as Pose2D;
+      const c = list[i] as Creature;
+      if (c.fade < 0.35) continue; // 正在淡出/刚出现的点不中
+      const dx = pose.x - x;
+      const dy = pose.y - y;
+      const d2 = dx * dx + dy * dy;
+      const r = Math.max(0.055, c.scale * 0.06);
+      if (d2 < r * r && d2 < bestD) {
+        bestD = d2;
+        best = c;
+      }
+    }
+    return best;
   }
 
   dispose(): void {

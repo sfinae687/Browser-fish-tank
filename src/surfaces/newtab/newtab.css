@@ -1,309 +1,135 @@
-/* 新标签页。原则：除了鱼缸本身，页面上不该有别的存在感。 */
+/*
+ * 新标签页。
+ *
+ * 一条总原则：**除了画布以外的所有东西都要能被忽略。**
+ * 这是一个会被每天看几十次的页面，任何一点持续存在的视觉噪音
+ * 都会累积成厌烦。所以时钟和状态都做得很轻，而且鼠标不动就隐去。
+ */
 
 :root {
+  --ink: rgb(226 240 246);
+  --ink-dim: rgb(150 176 190);
+  --ink-faint: rgb(96 118 132);
+  --glow: rgb(56 219 230);
   color-scheme: dark;
-  --ink: rgba(255, 255, 255, 0.92);
-  --ink-dim: rgba(255, 255, 255, 0.46);
-  --ink-faint: rgba(255, 255, 255, 0.22);
-  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 
 * {
-  margin: 0;
-  padding: 0;
   box-sizing: border-box;
 }
 
 html,
 body {
-  width: 100%;
+  margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #060d14;
-  font-family: var(--font);
+  background: #01030a;
+  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 #tank {
   position: fixed;
   inset: 0;
-  width: 100%;
-  height: 100%;
   display: block;
-}
-
-/* ——————————————— HUD ——————————————— */
-
-.hud {
-  position: fixed;
-  inset: auto 0 0 0;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  padding: 32px 36px;
-  pointer-events: none;
-  /* 默认隐去，鼠标动了才出现 —— 鱼缸才是主角 */
-  opacity: 0;
-  transition: opacity 420ms ease;
-}
-
-.hud.is-visible {
-  opacity: 1;
-}
-
-.hud__left {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.clock {
-  font-size: 56px;
-  font-weight: 200;
-  letter-spacing: 0.02em;
-  line-height: 1;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.55);
-}
-
-.date {
-  font-size: 13px;
-  font-weight: 400;
-  letter-spacing: 0.06em;
-  color: var(--ink-dim);
-  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.6);
-}
-
-.eco {
-  margin-top: 7px;
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  color: var(--ink-dim);
-  font-variant-numeric: tabular-nums;
-  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.6);
-}
-
-.hud__right {
-  display: flex;
-  align-items: center;
-  gap: 14px;
+  width: 100vw;
+  height: 100vh;
+  /* 指针事件必须打开：点击生物要能切标签页 */
   pointer-events: auto;
-}
-
-.status {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 11px;
-  border-radius: 999px;
-  background: rgba(4, 12, 20, 0.42);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  backdrop-filter: blur(9px);
-}
-
-.status__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #5fd4a0;
-  box-shadow: 0 0 8px rgba(95, 212, 160, 0.85);
-  transition: background 200ms ease, box-shadow 200ms ease;
-}
-
-.status__dot.is-warn {
-  background: #e2b04a;
-  box-shadow: 0 0 8px rgba(226, 176, 74, 0.85);
-}
-
-.status__dot.is-error {
-  background: #e2685a;
-  box-shadow: 0 0 8px rgba(226, 104, 90, 0.85);
-}
-
-.status__text {
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  color: var(--ink-dim);
-  font-variant-numeric: tabular-nums;
-}
-
-.link {
-  appearance: none;
-  background: none;
-  border: none;
-  padding: 5px 2px;
-  font: inherit;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  color: var(--ink-faint);
-  cursor: pointer;
-  transition: color 200ms ease;
-}
-
-.link:hover {
-  color: var(--ink);
-}
-
-/* ——————————————— 选鱼与杂交 ——————————————— */
-
-.breed {
-  position: fixed;
-  right: 36px;
-  top: 34px;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  padding: 14px 16px;
-  min-width: 208px;
-  border-radius: 12px;
-  background: rgba(6, 14, 22, 0.62);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(10px);
-  pointer-events: auto;
-  opacity: 0;
-  transition: opacity 300ms ease;
-}
-
-.breed.is-visible {
-  opacity: 1;
-}
-
-.breed[hidden] {
-  display: none;
-}
-
-.breed__row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.breed__slot {
-  flex: 1;
-  font-size: 11px;
-  letter-spacing: 0.04em;
-  color: var(--ink-dim);
-  padding: 5px 8px;
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.05);
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
-.breed__slot.is-set {
-  color: var(--ink);
-  background: rgba(88, 200, 224, 0.16);
-}
-
-.breed__times {
-  font-size: 11px;
-  color: var(--ink-faint);
-}
-
-.breed__info {
-  font-size: 10.5px;
-  line-height: 1.6;
-  color: var(--ink-faint);
-  min-height: 17px;
-}
-
-.breed__actions {
-  display: flex;
-  gap: 8px;
-}
-
-.button--small {
-  margin-top: 0;
-  padding: 6px 14px;
-  font-size: 11px;
-  align-self: flex-start;
-}
-
-.button:disabled {
-  opacity: 0.4;
   cursor: default;
 }
 
-/* 投食的涟漪。纯 CSS —— 投食的视觉反馈不值得为它加一条渲染通道。 */
-.ripple {
+/* ——————————————— 时钟 ——————————————— */
+
+.clock {
   position: fixed;
-  width: 14px;
-  height: 14px;
-  margin: -7px 0 0 -7px;
-  border-radius: 50%;
-  border: 1.5px solid rgba(255, 255, 255, 0.75);
+  left: 44px;
+  top: 38px;
   pointer-events: none;
-  animation: ripple 1100ms ease-out forwards;
+  /* 深色背景上纯白太扎眼，压到 0.86 并与水色微微同步 */
+  color: var(--ink);
+  opacity: 0.86;
+  transition: opacity 600ms ease;
+  text-shadow: 0 2px 24px rgba(0, 0, 0, 0.7);
 }
 
-@keyframes ripple {
-  from { transform: scale(0.4); opacity: 0.9; }
-  to   { transform: scale(7);   opacity: 0; }
+.clock__time {
+  font-size: 58px;
+  font-weight: 200;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .ripple { animation-duration: 1ms; }
+.clock__date {
+  margin-top: 8px;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  color: var(--ink-dim);
 }
 
-/* ——————————————— 开场生长 ——————————————— */
+/* ——————————————— 状态 ——————————————— */
 
-.intro {
+.hud {
   position: fixed;
-  left: 36px;
-  top: 34px;
+  left: 46px;
+  bottom: 34px;
   display: flex;
-  flex-direction: column;
-  gap: 9px;
+  align-items: center;
+  gap: 16px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
   pointer-events: none;
-  opacity: 0;
-  transition: opacity 700ms ease;
+  transition: opacity 900ms ease;
+  font-variant-numeric: tabular-nums;
 }
 
-.intro.is-visible {
+.hud__link {
+  pointer-events: auto;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  letter-spacing: inherit;
+  color: var(--glow);
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.hud__link:hover {
   opacity: 1;
 }
 
-.intro__seed {
-  display: flex;
-  align-items: baseline;
-  gap: 9px;
+/* 鼠标不动一段时间之后，除了海什么都不要有 */
+body.is-idle .clock,
+body.is-idle .hud {
+  opacity: 0;
 }
 
-.intro__label {
-  font-size: 10px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-}
+/* ——————————————— 悬停提示 ——————————————— */
 
-.intro__value {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 13px;
+.tip {
+  position: fixed;
+  z-index: 10;
+  max-width: 320px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  background: rgba(4, 12, 20, 0.82);
+  border: 1px solid rgba(120, 220, 235, 0.18);
+  backdrop-filter: blur(8px);
+  font-size: 12px;
+  line-height: 1.5;
   color: var(--ink);
-  letter-spacing: 0.04em;
-}
-
-.intro__bar {
-  width: 190px;
-  height: 1px;
-  background: rgba(255, 255, 255, 0.14);
+  white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  transform: translate(-50%, calc(-100% - 14px));
 }
 
-.intro__fill {
-  height: 100%;
-  width: 0%;
-  background: rgba(255, 255, 255, 0.72);
-  transition: width 120ms linear;
-}
-
-.intro__stage {
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--ink-dim);
-  min-height: 15px;
+.tip[hidden] {
+  display: none;
 }
 
 /* ——————————————— 兜底 ——————————————— */
@@ -311,57 +137,32 @@ body {
 .fallback {
   position: fixed;
   inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  text-align: center;
-  padding: 40px;
+  display: grid;
+  place-content: center;
+  gap: 18px;
+  justify-items: center;
+  background: #01030a;
+  color: var(--ink-dim);
+  font-size: 14px;
 }
 
 .fallback[hidden] {
   display: none;
 }
 
-.fallback h1 {
-  font-size: 20px;
-  font-weight: 300;
-  letter-spacing: 0.16em;
-  color: var(--ink);
-}
-
-.fallback p {
-  max-width: 460px;
-  font-size: 13px;
-  line-height: 1.7;
-  color: var(--ink-dim);
-}
-
-.button {
-  appearance: none;
-  margin-top: 8px;
-  padding: 9px 20px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--ink);
+.fallback__btn {
+  padding: 8px 18px;
+  border-radius: 8px;
+  border: 1px solid rgba(120, 220, 235, 0.3);
+  background: transparent;
+  color: var(--glow);
   font: inherit;
-  font-size: 12px;
-  letter-spacing: 0.08em;
   cursor: pointer;
-  transition: background 200ms ease, border-color 200ms ease;
-}
-
-.button:hover {
-  background: rgba(255, 255, 255, 0.11);
-  border-color: rgba(255, 255, 255, 0.3);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .hud,
-  .intro,
-  .status__dot {
-    transition: none;
+  .clock,
+  .hud {
+    transition-duration: 1ms;
   }
 }

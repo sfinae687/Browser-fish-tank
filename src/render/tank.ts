@@ -1,573 +1,349 @@
 /**
- * 渲染编排。
+ * 渲染器。
  *
- * Pass 图：
+ * ## 一帧的四个 pass
  *
- *   scene ──────────────────────────┐
- *     │                             │
- *     └─ brightpass ─ blurH ─ blurV ┤
- *                                   ↓
- *                                composite ─→ 画布（含玻璃层）
+ * ```
+ *   1. scene        水体：渐变 + 光池 + 焦散 + 光柱 + 海雪 + 暗角
+ *   2. creature     发光生物：光晕环 → 身体（各自独立的两遍绘制）
+ *   3. bright/blur  提亮部 → 横竖两次模糊（在低分辨率上做）
+ *   4. composite    场景 + 辉光 → 屏幕
+ * ```
  *
- * 场景以 `renderScale` 的低分辨率渲染（省电），
- * 但合成始终在完整的画布分辨率上进行 —— 玻璃边缘与颗粒必须锐利。
+ * ## 为什么生物在场景**之后**
+ *
+ * 水体和生物画进同一个 HDR 目标，顺序是「先水后生物」。
+ * 深海没有地面，所以不存在「生物被地形遮挡」的问题 ——
+ * 这一条省掉了整个深度排序。
+ *
+ * ## 缸内坐标
+ *
+ * 一切几何都用 [0,1]² 的「缸内坐标」描述，由 `computeTankRect` 映射到屏幕。
+ * 于是构图（铺满 / 居中 / 信箱）和缩放只是改一个矩形，
+ * 生物的位置、着色器里的比例都不用管。
+ *
+ *   t.x = 0 左，1 右
+ *   t.y = 0 水面，1 画面底部
  */
 
 import {
-  createContext,
   Program,
+  createContext,
   createRenderTarget,
   resizeRenderTarget,
-  createFullscreenVao,
   bindTarget,
   drawFullscreen,
-  detectPerformanceTier,
+  createFullscreenVao,
   type GL,
   type RenderTarget,
   type RendererContext,
 } from './gl.js';
-import { SCENE_FS } from './shaders/scene.js';
+import {
+  SCENE_FS,
+  SCENE_VS,
+  L_SURFACE,
+  L_CAUSTICS,
+  L_RAYS,
+  L_SNOW,
+  L_VIGNETTE,
+} from './shaders/scene.js';
 import { BRIGHT_FS, BLUR_FS, COMPOSITE_FS } from './shaders/post.js';
+import { CreatureRenderer } from './creatures.js';
+import type { Creature } from '../core/creatures.js';
 import type { Palette } from '../core/theme.js';
-import type { BackgroundMode, Framing, LayerToggles } from '../core/config.js';
-import type { RenderBudget } from '../core/quality.js';
-import type { BakedFlora } from './flora-bake.js';
-import { FLORA_BAKED_ASPECT } from './flora-bake.js';
-import { FishRenderer } from './fish.js';
-import type { Genome } from '../core/genome.js';
-import type { SchoolPose } from '../core/school.js';
-import type { RenderableFish } from './fish.js';
-import { sceneResolution, canvasResolution } from '../core/quality.js';
+import type { AnchorY, Framing, LayerToggles, ResolvedQuality } from '../core/config.js';
 
-// 与 scene.ts 里的位掩码保持一致
-const L_BACKMURK = 1 << 0;
-const L_HARDSCAPE = 1 << 1;
-const L_SUBSTRATE = 1 << 2;
-const L_FLORA = 1 << 3;
-const L_FAUNA = 1 << 4;
-const L_PARTICULATE = 1 << 5;
-const L_CAUSTICS = 1 << 6;
-const L_GODRAYS = 1 << 7;
+/** 水面在缸内的 y。略大于 0 —— 留一条水面线。 */
+const WATER_LINE = 0.035;
 
-const BACKGROUND_CODE: Record<BackgroundMode, number> = {
-  tank: 0,
-  generative: 1,
-  transparent: 2,
-  page: 3,
-};
+/**
+ * 辉光的阈值。
+ *
+ * 深色场景里压得很低：亮是稀缺资源，漏出来的越多越像在发光。
+ * 上一版是 0.76（几乎只有高光会漏），这一版 0.20。
+ */
+const BLOOM_THRESHOLD = 0.2;
+const BLOOM_KNEE = 0.35;
+/** 辉光在屏幕的 1/4 分辨率上模糊 —— 它本来就是低频的 */
+const BLOOM_DIVISOR = 4;
 
 export interface TankFrame {
-  /** 动画时间（秒）。受 motion 模式与 timeScale 影响，可被冻结。 */
+  /** 秒 */
   time: number;
-  /** 开场生长进度 0..1 */
+  /** 开场进度 0..1 */
   intro: number;
-  /** 日照强度 0..1 */
-  daylight: number;
-  /** 冷暖轴 -1..1 */
-  warmth: number;
-  /** 藻类生物量 0..1（来自世界状态）。让模拟真的影响画面。 */
-  algae: number;
-  /** 开场生长进度 0..1。0 = 还没长，1 = 长成。 */
-  growth: number;
-  /** 鱼群。为 null 时这一帧不画鱼。 */
-  school: {
-    genomes: readonly Genome[];
-    seeds: readonly RenderableFish[];
-    pose: SchoolPose;
-  } | null;
-  /** 归一化水温 0..1 */
-  heat: number;
-  lightDir: readonly [number, number];
   palette: Palette;
   layers: LayerToggles;
+  quality: ResolvedQuality;
   framing: Framing;
-  background: BackgroundMode;
-  opacity: number;
   zoom: number;
-  anchor: 'top' | 'center' | 'bottom';
-  seed: number;
-  budget: RenderBudget;
+  anchorY: AnchorY;
+  opacity: number;
+  /** 辉光强度倍率 */
+  bloom: number;
+  creatures: readonly Creature[];
 }
 
 /**
- * 计算缸体在屏幕 uv 中的矩形。
- *
- * 注意 uv 是 y 向下的。所有构图模式最终都归结为「一个矩形」，
- * 圆窗只是换了个遮罩 —— 这样着色器里只有一条代码路径。
+ * 算出缸在屏幕上的位置，返回 [x, y, w, h]（单位 uv，y 向下）。
  */
 export function computeTankRect(
   framing: Framing,
   zoom: number,
-  anchor: 'top' | 'center' | 'bottom',
+  anchorY: AnchorY,
   aspect: number,
 ): [number, number, number, number] {
-  let w = 1;
-  let h = 1;
+  const z = Math.max(0.1, zoom);
 
-  switch (framing) {
-    case 'fill':
-      break;
+  if (framing === 'fill') {
+    // 铺满：缸就是整个画面
+    return [(1 - z) / 2, (1 - z) / 2, z, z];
+  }
 
-    case 'letterbox': {
-      // 目标缸体像素宽高比 1.7 —— 真实鱼缸的常见比例
-      w = 0.94;
-      h = (w * aspect) / 1.7;
-      if (h > 0.94) {
-        h = 0.94;
-        w = (h * 1.7) / aspect;
-      }
-      break;
-    }
-
-    case 'bottom':
+  // 后两种都保持 16:9 的内容比例
+  const contentAspect = 16 / 9;
+  let w: number;
+  let h: number;
+  if (framing === 'letterbox') {
+    // 信箱：完整放进画面，比例不对就留边
+    if (aspect > contentAspect) {
+      h = 1;
+      w = contentAspect / aspect;
+    } else {
       w = 1;
-      h = 0.62;
-      break;
-
-    case 'porthole': {
-      // 像素空间画正圆：h*H == w*W
-      h = 0.82;
-      w = Math.min(0.94, h / Math.max(0.0001, aspect));
-      break;
+      h = aspect / contentAspect;
+    }
+  } else {
+    // 居中：一个居中的 16:9 矩形，默认小一圈
+    const base = 0.82;
+    if (aspect > contentAspect) {
+      h = base;
+      w = (contentAspect / aspect) * base;
+    } else {
+      w = base;
+      h = (aspect / contentAspect) * base;
     }
   }
 
-  // zoom 统一理解为放大倍率：矩形变小 = 看进去更近
-  w /= zoom;
-  h /= zoom;
+  w *= z;
+  h *= z;
 
-  let x = (1 - w) / 2;
+  const x = (1 - w) / 2;
   let y = (1 - h) / 2;
-
-  if (framing === 'bottom') {
-    // 贴底构图放大时应该保持贴底，而不是往中间缩
-    y = 1 - h;
-  } else if (anchor === 'top') {
-    y = 0;
-  } else if (anchor === 'bottom') {
-    y = 1 - h;
-  }
+  if (anchorY === 'top') y = 0;
+  else if (anchorY === 'bottom') y = 1 - h;
 
   return [x, y, w, h];
 }
 
-function layersToBits(l: LayerToggles): number {
-  return (
-    (l.backMurk ? L_BACKMURK : 0) |
-    (l.hardscape ? L_HARDSCAPE : 0) |
-    (l.substrate ? L_SUBSTRATE : 0) |
-    (l.flora ? L_FLORA : 0) |
-    (l.fauna ? L_FAUNA : 0) |
-    (l.particulates ? L_PARTICULATE : 0) |
-    (l.caustics ? L_CAUSTICS : 0) |
-    (l.godRays ? L_GODRAYS : 0)
-  );
-}
-
 export class TankRenderer {
-  private ctx: RendererContext;
-  private gl: GL;
-  private readonly canvas: HTMLCanvasElement;
+  readonly canvas: HTMLCanvasElement;
+  readonly ctx: RendererContext;
 
-  private sceneProgram: Program;
-  private brightProgram: Program;
-  private blurProgram: Program;
-  private compositeProgram: Program;
-  private vao: WebGLVertexArrayObject;
+  private readonly gl: GL;
+  private readonly vao: WebGLVertexArrayObject;
 
-  private sceneRT: RenderTarget | null = null;
-  private brightRT: RenderTarget | null = null;
-  private blurRT: RenderTarget | null = null;
+  private sceneRT: RenderTarget;
+  private bloomA: RenderTarget;
+  private bloomB: RenderTarget;
 
-  private lastSceneW = 0;
-  private lastSceneH = 0;
+  private readonly sceneProg: Program;
+  private readonly brightProg: Program;
+  private readonly blurProg: Program;
+  private readonly compositeProg: Program;
+  private readonly creatureRenderer: CreatureRenderer;
 
-  /** 植物骨架纹理。种子换了才重新上传，不是每帧的事。 */
-  private floraTexture: WebGLTexture | null = null;
-  /** 没有植物时用它占位，省得着色器里到处判空 */
-  private blankTexture: WebGLTexture | null = null;
-
-  /** 鱼（P3 引入的顶点管线）。 */
-  private fishRenderer: FishRenderer | null = null;
-
-  private contextLost = false;
   private disposed = false;
 
-  /** 供诊断面板读取 */
-  readonly info: {
-    renderer: string;
-    software: boolean;
-    floatTargets: boolean;
-    deviceTier: 'low' | 'medium' | 'high';
-    drawCalls: number;
-  };
-
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, opts: { alpha?: boolean } = {}) {
     this.canvas = canvas;
-    this.ctx = createContext(canvas, { preferFloatTargets: true, alpha: true });
+    this.ctx = createContext(canvas, {
+      preferFloatTargets: true,
+      alpha: opts.alpha ?? false,
+    });
     this.gl = this.ctx.gl;
 
     const gl = this.gl;
-
-    // 长寿命的标签页里上下文丢失是会发生的事（驱动更新、GPU 挂起、系统休眠）。
-    // 不处理的话画面就永久黑了，而用户只会觉得「扩展坏了」。
-    canvas.addEventListener('webglcontextlost', this.onContextLost, false);
-    canvas.addEventListener('webglcontextrestored', this.onContextRestored, false);
-
     this.vao = createFullscreenVao(gl);
     gl.bindVertexArray(this.vao);
 
-    this.sceneProgram = new Program(gl, SCENE_FS);
-    this.brightProgram = new Program(gl, BRIGHT_FS);
-    this.blurProgram = new Program(gl, BLUR_FS);
-    this.compositeProgram = new Program(gl, COMPOSITE_FS);
+    const w = Math.max(1, canvas.width);
+    const h = Math.max(1, canvas.height);
+    this.sceneRT = createRenderTarget(gl, w, h, this.ctx.floatTargets);
+    const bw = Math.max(1, Math.floor(w / BLOOM_DIVISOR));
+    const bh = Math.max(1, Math.floor(h / BLOOM_DIVISOR));
+    this.bloomA = createRenderTarget(gl, bw, bh, this.ctx.floatTargets);
+    this.bloomB = createRenderTarget(gl, bw, bh, this.ctx.floatTargets);
 
-    this.info = {
+    this.sceneProg = new Program(gl, SCENE_FS, SCENE_VS);
+    this.brightProg = new Program(gl, BRIGHT_FS, SCENE_VS);
+    this.blurProg = new Program(gl, BLUR_FS, SCENE_VS);
+    this.compositeProg = new Program(gl, COMPOSITE_FS, SCENE_VS);
+    this.creatureRenderer = new CreatureRenderer(gl);
+  }
+
+  get info(): { renderer: string; software: boolean; floatTargets: boolean } {
+    return {
       renderer: this.ctx.renderer,
       software: this.ctx.software,
       floatTargets: this.ctx.floatTargets,
-      deviceTier: detectPerformanceTier(this.ctx.software),
-      drawCalls: 0,
     };
-
-    this.blankTexture = this.makeBlankTexture();
-    this.fishRenderer = new FishRenderer(gl);
-
-    // 混合模式必须在合成阶段关闭：我们的着色器自己算 alpha，
-    // 打开混合会让半透明的覆盖层把水叠两遍。
-    gl.disable(gl.BLEND);
-    gl.disable(gl.DEPTH_TEST);
-    gl.disable(gl.CULL_FACE);
   }
 
-  /** 1×1 全透明纹理。用于「这个图层没有数据」时的占位。 */
-  private makeBlankTexture(): WebGLTexture | null {
-    const gl = this.gl;
-    const tex = gl.createTexture();
-    if (!tex) return null;
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
-      new Uint8Array([0, 0, 0, 0]));
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.bindTexture(gl.TEXTURE_2D, null);
-    return tex;
+  get drawStats(): { creatures: number; draws: number } {
+    return this.creatureRenderer.stats;
   }
 
   /**
-   * 上传植物骨架纹理。
+   * 缸内坐标命中了哪只生物。
    *
-   * 只在种子变化时调用 —— 光栅化要跑几十毫秒，绝不能放进每帧的路径里。
+   * 转发给生物渲染器 —— 它才是持有「这一帧真正用过的姿态」的地方。
+   * 运行器另算一遍姿态是不行的：那样点击命中的和画面上看到的可能差一帧。
    */
-  setFlora(baked: BakedFlora | null): void {
-    if (this.disposed || this.isLost) return;
-    const gl = this.gl;
-
-    if (!baked) {
-      if (this.floraTexture) {
-        gl.deleteTexture(this.floraTexture);
-        this.floraTexture = null;
-      }
-      return;
-    }
-
-    if (!this.floraTexture) this.floraTexture = gl.createTexture();
-    if (!this.floraTexture) return;
-
-    gl.bindTexture(gl.TEXTURE_2D, this.floraTexture);
-    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texImage2D(
-      gl.TEXTURE_2D, 0, gl.RGBA, baked.width, baked.height, 0,
-      gl.RGBA, gl.UNSIGNED_BYTE, baked.pixels,
-    );
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.bindTexture(gl.TEXTURE_2D, null);
+  pick(x: number, y: number, list: readonly Creature[]): Creature | null {
+    return this.creatureRenderer.pick(x, y, list);
   }
 
-  private onContextLost = (e: Event): void => {
-    // 必须 preventDefault，否则浏览器不会尝试恢复上下文
-    e.preventDefault();
-    this.contextLost = true;
-    this.sceneRT = null;
-    this.brightRT = null;
-    this.blurRT = null;
-    // 纹理随上下文一起没了，引用必须清掉，否则恢复后会拿着一个失效对象
-    this.floraTexture = null;
-    this.blankTexture = null;
-    this.lastSceneW = 0;
-    this.lastSceneH = 0;
-  };
-
-  private onContextRestored = (): void => {
-    try {
-      const gl = this.gl;
-      this.vao = createFullscreenVao(gl);
-      gl.bindVertexArray(this.vao);
-      this.sceneProgram = new Program(gl, SCENE_FS);
-      this.brightProgram = new Program(gl, BRIGHT_FS);
-      this.blurProgram = new Program(gl, BLUR_FS);
-      this.compositeProgram = new Program(gl, COMPOSITE_FS);
-      this.blankTexture = this.makeBlankTexture();
-    this.fishRenderer = new FishRenderer(gl);
-      // floraTexture 留空 —— 调用方会重新 setFlora
-      this.contextLost = false;
-    } catch (err) {
-      console.error('[计算水族箱] 上下文恢复失败', err);
-      this.contextLost = true;
-    }
-  };
-
-  get isLost(): boolean {
-    return this.contextLost || this.gl.isContextLost();
-  }
-
-  /** 按当前 CSS 尺寸与画质预算调整所有渲染目标。返回是否发生了变化。 */
-  private syncSize(budget: RenderBudget): { cssW: number; cssH: number; changed: boolean } {
-    const cssW = Math.max(1, this.canvas.clientWidth);
-    const cssH = Math.max(1, this.canvas.clientHeight);
-
-    const canvasSize = canvasResolution(cssW, cssH, budget);
-    const sceneSize = sceneResolution(cssW, cssH, budget);
-
-    let changed = false;
-
-    if (this.canvas.width !== canvasSize.width || this.canvas.height !== canvasSize.height) {
-      this.canvas.width = canvasSize.width;
-      this.canvas.height = canvasSize.height;
-      changed = true;
-    }
-
-    const gl = this.gl;
-    const wantFloat = this.ctx.floatTargets;
-
-    if (!this.sceneRT || this.lastSceneW !== sceneSize.width || this.lastSceneH !== sceneSize.height) {
-      this.sceneRT = resizeRenderTarget(gl, this.sceneRT ?? createRenderTarget(gl, 1, 1, wantFloat), sceneSize.width, sceneSize.height, wantFloat);
-      this.lastSceneW = sceneSize.width;
-      this.lastSceneH = sceneSize.height;
-
-      const halfW = Math.max(1, sceneSize.width >> 1);
-      const halfH = Math.max(1, sceneSize.height >> 1);
-      this.brightRT = resizeRenderTarget(gl, this.brightRT ?? createRenderTarget(gl, 1, 1, wantFloat), halfW, halfH, wantFloat);
-      this.blurRT = resizeRenderTarget(gl, this.blurRT ?? createRenderTarget(gl, 1, 1, wantFloat), halfW, halfH, wantFloat);
-      changed = true;
-    }
-
-    return { cssW, cssH, changed };
-  }
-
+  /** 画一帧。调用方负责先把 canvas 尺寸设好（见 `resizeToDisplay`）。 */
   render(frame: TankFrame): void {
-    if (this.disposed || this.isLost) return;
-
+    if (this.disposed) return;
     const gl = this.gl;
-    const budget = frame.budget;
+    const canvas = this.canvas;
+    const w = Math.max(1, canvas.width);
+    const h = Math.max(1, canvas.height);
+    const aspect = w / h;
 
-    const { cssW, cssH } = this.syncSize(budget);
-    const sceneRT = this.sceneRT;
-    const brightRT = this.brightRT;
-    const blurRT = this.blurRT;
-    if (!sceneRT || !brightRT || !blurRT) return;
+    this.ensureSize(w, h);
+    const rect = computeTankRect(frame.framing, frame.zoom, frame.anchorY, aspect);
 
-    const drawCalls = { n: 0 };
-    const seedFloat = (frame.seed % 100000) / 1000;
-    const layerBits = layersToBits(frame.layers);
-    const shape = frame.framing === 'porthole' ? 1 : 0;
-    const aspect = cssW / Math.max(1, cssH);
-    const rect = computeTankRect(frame.framing, frame.zoom, frame.anchor, aspect);
+    // ——————— 1. 水体 ———————
+    let mask = 0;
+    if (frame.layers.surface) mask |= L_SURFACE;
+    if (frame.layers.caustics) mask |= L_CAUSTICS;
+    if (frame.layers.rays) mask |= L_RAYS;
+    if (frame.layers.snow) mask |= L_SNOW;
+    if (frame.layers.vignette) mask |= L_VIGNETTE;
 
-    // ——————— 1. 场景 ———————
-    gl.bindVertexArray(this.vao);
-    bindTarget(gl, sceneRT, cssW, cssH);
-    {
-      const p = this.sceneProgram.use();
-      p.vec2('uRes', sceneRT.width, sceneRT.height);
-      p.float('uTime', frame.time);
-      p.float('uSeed', seedFloat);
-      p.vec4('uTankRect', rect[0], rect[1], rect[2], rect[3]);
-      p.float('uWaterLine', 0.055);
-      p.int('uShape', shape);
-      p.int('uBackground', BACKGROUND_CODE[frame.background] ?? 0);
-      p.int('uDetail', budget.detail);
-      p.int('uLayers', layerBits);
+    bindTarget(gl, this.sceneRT, w, h);
+    gl.disable(gl.BLEND);
+    const p = this.sceneProg.use();
+    p.vec4('uTankRect', rect[0], rect[1], rect[2], rect[3]);
+    p.vec2('uResolution', w, h);
+    p.float('uAspect', aspect);
+    p.float('uTime', frame.time);
+    p.float('uSeed', 3.7);
+    p.float('uIntro', frame.intro);
+    p.vec3a('uWaterTop', frame.palette.waterTop);
+    p.vec3a('uWaterDeep', frame.palette.waterDeep);
+    p.vec3a('uLight', frame.palette.light);
+    p.vec3a('uCaustic', frame.palette.caustic);
+    p.float('uAmbient', frame.palette.ambient);
+    p.float('uTurbidity', frame.palette.turbidity);
+    p.int('uDetail', frame.quality.detail);
+    p.int('uLayers', mask);
+    drawFullscreen(gl);
 
-      const pal = frame.palette;
-      p.vec3a('uWaterTop', pal.waterTop);
-      p.vec3a('uWaterBottom', pal.waterBottom);
-      p.vec3a('uFog', pal.fog);
-      p.vec3a('uLight', pal.light);
-      p.vec3a('uCaustic', pal.caustic);
-      p.vec3a('uSubstrate', pal.substrate);
-      p.vec3a('uSubstrateDark', pal.substrateDark);
-      p.vec3a('uAccent', pal.accent);
-      p.float('uAmbient', pal.ambient);
-      p.float('uTurbidity', pal.turbidity);
-      p.float('uDaylight', frame.daylight);
-      p.float('uWarmth', frame.warmth);
-      p.vec2('uLightDir', frame.lightDir[0], frame.lightDir[1]);
-      p.float('uIntro', frame.intro);
-      p.float('uAlgae', frame.algae);
-      p.float('uHeat', frame.heat);
-      p.float('uGrowth', frame.growth);
-      p.float('uFloraAspect', FLORA_BAKED_ASPECT);
-      p.texture('uFlora', 2, this.floraTexture ?? this.blankTexture ?? sceneRT.texture);
-
-      drawFullscreen(gl);
-      drawCalls.n++;
-    }
-
-    // ——————— 1.5 鱼 ———————
-    //
-    // 画进**同一个**场景 FBO，紧跟在全屏场景着色器之后，并打开混合。
-    // 顺序上鱼会盖住水体、底砂、植物与几何块 —— 这是对的，
-    // 因为鱼本来就在它们前面游。
-    //
-    // 唯一牺牲的是「前景 bokeh 应该盖在鱼之上」：它在场景 pass 里已经画完了。
-    // 把 bokeh 挪到合成 pass 就能修好，留给下一轮。
-    if (frame.school && frame.layers.fauna && this.fishRenderer) {
-      // 每帧同步网格：繁殖会产生新基因组，而池子上限只有 56，
-      // 一次 Map 查找的量级完全可以忽略。这样就不需要一套失效通知机制。
-      this.fishRenderer.sync(frame.school.genomes);
-      bindTarget(gl, sceneRT, cssW, cssH);
-      this.fishRenderer.render({
+    // ——————— 2. 发光生物（同一个目标，画在水体之上）———————
+    // CreatureRenderer 在构造时就把 4 个体型的网格都建好了，
+    // 运行时没有「同步网格」这一步 —— 体型是固定的，不随标签页变化。
+    if (frame.layers.creatures && frame.creatures.length > 0) {
+      this.creatureRenderer.render({
         tankRect: rect,
-        genomes: frame.school.genomes,
-        seeds: frame.school.seeds,
-        pose: frame.school.pose,
+        creatures: frame.creatures,
         palette: frame.palette,
-        timeSeconds: frame.time,
-        daylight: frame.daylight,
-        waterLine: 0.055,
-        sandLine: 0.80,
-        turbidity: frame.palette.turbidity,
+        time: frame.time,
+        intro: frame.intro,
         opacity: 1,
       });
       gl.disable(gl.BLEND);
-      drawCalls.n++;
     }
 
-    // ——————— 2. 辉光 ———————
-    if (budget.bloom) {
-      bindTarget(gl, brightRT, cssW, cssH);
-      {
-        const p = this.brightProgram.use();
-        p.texture('uSource', 0, sceneRT.texture);
-        p.vec2('uTexel', 1 / sceneRT.width, 1 / sceneRT.height);
-        p.float('uThreshold', 0.76);
-        p.float('uKnee', 0.22);
-        drawFullscreen(gl);
-        drawCalls.n++;
-      }
+    // ——————— 3. 辉光 ———————
+    const bw = this.bloomA.width;
+    const bh = this.bloomA.height;
+    let bloomTex = this.bloomA.texture;
 
-      // 两轮分离模糊 ≈ 等效 18 tap 的高斯，但只有 4 次采样/pass
-      const rounds = budget.tier === 'high' ? 2 : 1;
-      for (let r = 0; r < rounds; r++) {
-        bindTarget(gl, blurRT, cssW, cssH);
-        this.blurProgram
-          .use()
-          .texture('uSource', 0, brightRT.texture)
-          .vec2('uTexel', 1 / brightRT.width, 1 / brightRT.height)
-          .vec2('uDirection', 1, 0);
-        drawFullscreen(gl);
-        drawCalls.n++;
-
-        bindTarget(gl, brightRT, cssW, cssH);
-        this.blurProgram
-          .use()
-          .texture('uSource', 0, blurRT.texture)
-          .vec2('uTexel', 1 / blurRT.width, 1 / blurRT.height)
-          .vec2('uDirection', 0, 1);
-        drawFullscreen(gl);
-        drawCalls.n++;
-      }
-    } else {
-      // 关掉辉光时仍然要清空 brightRT，否则合成会读到上一帧的残留
-      bindTarget(gl, brightRT, cssW, cssH);
-      gl.clearColor(0, 0, 0, 0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
-      drawCalls.n++;
-    }
-
-    // ——————— 3. 合成 ———————
-    bindTarget(gl, null, cssW, cssH);
-    {
-      const p = this.compositeProgram.use();
-      p.texture('uScene', 0, sceneRT.texture);
-      p.texture('uBloom', 1, brightRT.texture);
-      p.vec2('uRes', this.canvas.width, this.canvas.height);
-      p.vec4('uTankRect', rect[0], rect[1], rect[2], rect[3]);
-      p.float('uWaterLine', 0.055);
-      p.int('uShape', shape);
-      p.int('uGlass', frame.layers.glass ? 1 : 0);
-      // 'fill' 时缸体就是屏幕，再画一圈黑边会像贴了个相框
-      p.int('uFrame', frame.framing === 'fill' ? 0 : 1);
-      p.int('uDetail', budget.detail);
-      p.float('uOpacity', frame.opacity);
-      p.float('uTime', frame.time);
-      p.float('uSeed', seedFloat);
-      p.float('uDaylight', frame.daylight);
-      p.float('uBloomStrength', budget.bloomStrength);
-      p.float('uExposure', 1.0);
-      p.vec3a('uLight', frame.palette.light);
-      p.vec3a('uGlassTint', frame.palette.glassTint);
-      p.vec3a('uAccent', frame.palette.accent);
-      p.vec3a('uFog', frame.palette.fog);
-      p.vec3a('uCausticCol', frame.palette.caustic);
-      // 前景失焦光斑跟着「悬浮物」图层走 —— 它和微粒是同一类东西，
-      // 只是一个合焦一个失焦
-      p.float('uBokeh', frame.layers.particulates ? 1 : 0);
-
+    if (frame.layers.bloom && frame.bloom > 0.001) {
+      bindTarget(gl, this.bloomA, bw, bh);
+      gl.disable(gl.BLEND);
+      const bp = this.brightProg.use();
+      bp.texture('uScene', 0, this.sceneRT.texture);
+      bp.float('uThreshold', BLOOM_THRESHOLD);
+      bp.float('uKnee', BLOOM_KNEE);
       drawFullscreen(gl);
-      drawCalls.n++;
+
+      // 横竖两次。方向按目标分辨率折算，所以缩放窗口不会改变观感。
+      const blur = this.blurProg.use();
+      bindTarget(gl, this.bloomB, bw, bh);
+      blur.texture('uSource', 0, this.bloomA.texture);
+      blur.vec2('uDir', 1 / bw, 0);
+      drawFullscreen(gl);
+
+      bindTarget(gl, this.bloomA, bw, bh);
+      blur.texture('uSource', 0, this.bloomB.texture);
+      blur.vec2('uDir', 0, 1 / bh);
+      drawFullscreen(gl);
+
+      bloomTex = this.bloomA.texture;
     }
 
-    gl.bindVertexArray(null);
-    (this.info as { drawCalls: number }).drawCalls = drawCalls.n;
+    // ——————— 4. 合成 ———————
+    bindTarget(gl, null, w, h);
+    gl.disable(gl.BLEND);
+    const cp = this.compositeProg.use();
+    cp.texture('uScene', 0, this.sceneRT.texture);
+    cp.texture('uBloom', 1, bloomTex);
+    cp.vec4('uTankRect', rect[0], rect[1], rect[2], rect[3]);
+    cp.float('uTime', frame.time);
+    cp.float('uBloomStrength', frame.layers.bloom ? frame.bloom * frame.palette.bloom : 0);
+    cp.float('uOpacity', frame.opacity);
+    cp.float('uWaterLine', WATER_LINE);
+    drawFullscreen(gl);
+
+    // 全屏 pass 依赖这个 VAO 绑着，而生物绘制会把它换掉 —— 每帧恢复一次
+    gl.bindVertexArray(this.vao);
   }
 
-  /** 清空画布。隐藏或暂停时调用，避免残留上一帧。 */
-  clear(): void {
-    if (this.disposed || this.isLost) return;
+  private ensureSize(w: number, h: number): void {
+    if (this.sceneRT.width === w && this.sceneRT.height === h) return;
     const gl = this.gl;
-    bindTarget(gl, null, this.canvas.width, this.canvas.height);
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
+    this.sceneRT = resizeRenderTarget(gl, this.sceneRT, w, h, this.ctx.floatTargets);
+    const bw = Math.max(1, Math.floor(w / BLOOM_DIVISOR));
+    const bh = Math.max(1, Math.floor(h / BLOOM_DIVISOR));
+    this.bloomA = resizeRenderTarget(gl, this.bloomA, bw, bh, this.ctx.floatTargets);
+    this.bloomB = resizeRenderTarget(gl, this.bloomB, bw, bh, this.ctx.floatTargets);
+  }
+
+  /**
+   * 把绘制缓冲对齐到显示尺寸，返回实际像素尺寸。
+   *
+   * 高分屏上不让 dpr 无上限地放大像素数 —— 4K 屏 × 2 会直接拖垮帧率。
+   */
+  resizeToDisplay(renderScale: number): { width: number; height: number } {
+    const dpr = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1;
+    const capped = Math.min(dpr, 2);
+    const scale = Math.max(0.3, renderScale) * capped;
+    const w = Math.max(2, Math.floor(this.canvas.clientWidth * scale));
+    const h = Math.max(2, Math.floor(this.canvas.clientHeight * scale));
+    if (this.canvas.width !== w || this.canvas.height !== h) {
+      this.canvas.width = w;
+      this.canvas.height = h;
+    }
+    return { width: w, height: h };
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-
-    this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
-    this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
-
-    this.sceneRT?.dispose();
-    this.brightRT?.dispose();
-    this.blurRT?.dispose();
-    this.sceneRT = null;
-    this.brightRT = null;
-    this.blurRT = null;
-
-    this.fishRenderer?.dispose();
-    this.fishRenderer = null;
-
-    if (this.floraTexture) this.gl.deleteTexture(this.floraTexture);
-    if (this.blankTexture) this.gl.deleteTexture(this.blankTexture);
-    this.floraTexture = null;
-    this.blankTexture = null;
-
-    this.sceneProgram.dispose();
-    this.brightProgram.dispose();
-    this.blurProgram.dispose();
-    this.compositeProgram.dispose();
-
-    this.gl.deleteVertexArray(this.vao);
-
-    // 主动释放上下文。不这么做的话，反复重建渲染器会把
-    // 浏览器的 WebGL 上下文配额耗尽（Chrome 上限约 16 个）。
-    this.gl.getExtension('WEBGL_lose_context')?.loseContext();
+    const gl = this.gl;
+    this.sceneRT.dispose();
+    this.bloomA.dispose();
+    this.bloomB.dispose();
+    this.sceneProg.dispose();
+    this.brightProg.dispose();
+    this.blurProg.dispose();
+    this.compositeProg.dispose();
+    this.creatureRenderer.dispose();
+    gl.deleteVertexArray(this.vao);
   }
 }

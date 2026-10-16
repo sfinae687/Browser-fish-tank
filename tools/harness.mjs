@@ -316,11 +316,35 @@ export async function capture(opts) {
     }
 
     if (!ready) {
+      // 超时是最需要诊断的时刻 —— 这时把页面的真实状态抓出来，
+      // 而不是只丢一句「脚本可能根本没执行」（那句话曾经把我带偏过）。
+      let diag = '';
+      try {
+        const d = await cdp.send('Runtime.evaluate', {
+          expression: `(() => ({
+            aqua: typeof window.__aqua,
+            aquaKeys: window.__aqua ? Object.keys(window.__aqua).join(',') : null,
+            ui: window.__aquaUI ?? null,
+            chrome: typeof chrome,
+            hasTabsApi: typeof chrome !== 'undefined' && typeof chrome.tabs !== 'undefined',
+            scripts: [...document.scripts].map((s) => s.src || '(inline)').join(' | '),
+            body: document.body ? document.body.children.length : -1,
+            fallbackShown: !!(document.getElementById('fallback') && !document.getElementById('fallback').hidden),
+            fallbackMsg: (document.getElementById('fallback-msg') || {}).textContent || null,
+            status: (document.getElementById('status') || {}).textContent || null,
+          }))()`,
+          returnByValue: true,
+        });
+        diag = '\n页面状态：' + JSON.stringify(d?.result?.value);
+      } catch {
+        diag = '\n页面状态：读取失败';
+      }
       throw new Error(
         `等待就绪超时（${timeoutMs}ms，已渲染 ${frames} 帧）。` +
+          diag +
           (consoleMessages.length
             ? '\n页面控制台：\n  ' + consoleMessages.join('\n  ')
-            : '\n页面控制台：（没有任何输出 —— 脚本可能根本没执行）'),
+            : '\n页面控制台：（没有任何输出）'),
       );
     }
 
@@ -331,7 +355,19 @@ export async function capture(opts) {
     //
     // 打开一个 screencast 就能逼着合成器持续产帧。每帧必须回 ack，
     // 否则流会自己停掉。
-    if (keepAnimating) {
+    // 探针：脚本到底有没有执行？在模块最外层打一个标记，
+  // 这样「没执行」和「执行了但抛异常」能区分开。
+  await cdp
+    .send('Runtime.evaluate', {
+      expression: `(() => { window.__probe = { at: 'nav-done', aqua: typeof window.__aqua,
+        ui: window.__aquaUI ?? null, hasChrome: typeof chrome,
+        hasTabs: typeof chrome !== 'undefined' && typeof chrome.tabs }; return window.__probe; })()`,
+      returnByValue: true,
+    })
+    .then((r) => console.log('[harness] 探针', JSON.stringify(r?.result?.value)))
+    .catch(() => {});
+
+  if (keepAnimating) {
       cdp.on((msg) => {
         if (msg.method === 'Page.screencastFrame') {
           cdp
@@ -345,7 +381,19 @@ export async function capture(opts) {
     // 就绪后再放一会儿，让动画走过开场、也让辉光等需要多帧的效果稳定
     await sleep(settleMs);
 
-    if (keepAnimating) {
+    // 探针：脚本到底有没有执行？在模块最外层打一个标记，
+  // 这样「没执行」和「执行了但抛异常」能区分开。
+  await cdp
+    .send('Runtime.evaluate', {
+      expression: `(() => { window.__probe = { at: 'nav-done', aqua: typeof window.__aqua,
+        ui: window.__aquaUI ?? null, hasChrome: typeof chrome,
+        hasTabs: typeof chrome !== 'undefined' && typeof chrome.tabs }; return window.__probe; })()`,
+      returnByValue: true,
+    })
+    .then((r) => console.log('[harness] 探针', JSON.stringify(r?.result?.value)))
+    .catch(() => {});
+
+  if (keepAnimating) {
       await cdp.send('Page.stopScreencast').catch(() => {});
     }
 
@@ -389,6 +437,7 @@ export async function capture(opts) {
           frames: a.frames || 0, tick: a.tick ?? null, hash: a.hash ?? null,
           actionSeq: a.actionSeq ?? 0, journal: a.journal ?? 0, nutrients: a.nutrients ?? null,
           diverged: a.diverged === true, error: a.error || null,
+          aqua: a,
           probe: (() => {
             const el = document.elementFromPoint(500, 400);
             const cv = document.getElementById('tank');
@@ -413,6 +462,7 @@ export async function capture(opts) {
         journal: v.journal ?? 0,
         nutrients: v.nutrients ?? null,
         probe: v.probe ?? null,
+        aqua: v.aqua ?? null,
       };
     }
 

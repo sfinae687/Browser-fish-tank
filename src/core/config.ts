@@ -1,353 +1,271 @@
 /**
- * 配置模型。
+ * 配置。
  *
- * 拆成两层，这是用户明确要求「两个位置独立配置」后的必然结果：
+ * ## 两个表面各自独立
  *
- *   SharedWorldConfig   同一个世界：种子、基因组池、生态状态
- *   SurfaceConfig       每个表面各一份：怎么**呈现**这个世界
+ * 新标签页和页面覆盖层是两件不同的东西，配置必须分开：
+ * 新标签页是「主场」，通常要满、要亮；覆盖层是「客串」，
+ * 通常要淡、要小、不能挡住正文。
  *
- * 默认共享世界（你在新标签页喂的鱼，覆盖层里也是同一条），
- * 但每个表面怎么画它完全独立 —— 新标签页可以是耀眼的礁石，
- * 覆盖层可以只是网页上一层几乎看不见的水影。
+ * ## 和上一版最大的区别：这里没有「世界」
  *
- * @see DESIGN.md §1
+ * 旧配置里有一大堆和模拟相关的旋钮（种子如何决定基因组、生态参数、
+ * 繁殖阈值…）。这一版全部没有 —— 画面只由「主题 + 图层 + 构图」
+ * 和**当前打开了哪些标签页**决定。
  */
 
-import { normalizeSeed, randomSeedString } from './rng.js';
+import type { ThemeName } from './theme.js';
+import { isThemeName } from './theme.js';
 
 export type SurfaceId = 'newtab' | 'overlay';
-
 export const SURFACE_IDS: readonly SurfaceId[] = ['newtab', 'overlay'];
 
+export const SURFACE_LABELS: Record<SurfaceId, string> = {
+  newtab: '新标签页',
+  overlay: '页面覆盖层',
+};
+
 export type Quality = 'auto' | 'low' | 'medium' | 'high';
-export type Framing = 'fill' | 'letterbox' | 'bottom' | 'porthole';
-export type BackgroundMode = 'tank' | 'generative' | 'transparent' | 'page';
-export type MotionMode = 'full' | 'calm' | 'reduced' | 'still';
-export type PointerMode = 'none' | 'ripple' | 'full';
-export type BlendMode = 'normal' | 'screen' | 'multiply' | 'luminosity';
+
+/** 构图。深海场景里「圆窗」这个选项意义不大，去掉了。 */
+export type Framing = 'fill' | 'center' | 'letterbox';
+
+export type AnchorY = 'top' | 'center' | 'bottom';
 
 export interface LayerToggles {
-  backMurk: boolean;
-  hardscape: boolean;
-  substrate: boolean;
-  flora: boolean;
-  fauna: boolean;
-  particulates: boolean;
+  /** 水面那条很淡的线 */
+  surface: boolean;
+  /** 只在顶部可见的焦散 */
   caustics: boolean;
-  godRays: boolean;
-  /** ⭐ 最能卖出「缸」而不是「水下图」的一层。见 DESIGN.md §3.2 */
-  glass: boolean;
-  hud: boolean;
+  /** 从上方斜射的光柱 */
+  rays: boolean;
+  /** 悬浮微粒（海雪）。深色场景里性价比最高的一层 */
+  snow: boolean;
+  /** 暗角 */
+  vignette: boolean;
+  /** 发光生物。关掉就只剩一片安静的海 */
+  creatures: boolean;
+  /** 辉光。这套美术的造型手段，不建议关 */
+  bloom: boolean;
 }
 
 export interface SurfaceConfig {
+  /** 覆盖层是否启用。新标签页忽略这一项（它本身就是页面）。 */
   enabled: boolean;
-
-  // —— 画质与性能 ——
-  quality: Quality;
-  fpsCap: 15 | 30 | 60;
-  pixelRatioCap: number;
-
-  // —— 呈现 ——
+  /** 整体不透明度 0..1 */
   opacity: number;
-  blendMode: BlendMode;
   framing: Framing;
   zoom: number;
-  anchor: 'top' | 'center' | 'bottom';
-
-  // —— 风格（两个表面完全独立）——
-  theme: import('./theme.js').ThemeName;
-  background: BackgroundMode;
-  /** 为 true 时这个表面用独立种子，变成一个不相干的世界 */
-  separateSeed: boolean;
-  /** separateSeed 生效时使用 */
-  seed: string;
-
-  // —— 图层 ——
+  anchorY: AnchorY;
+  theme: ThemeName;
+  quality: Quality;
+  /** 帧率上限。省电的关键 —— 深海不需要 60fps */
+  fpsCap: number;
+  /** 辉光强度倍率 */
+  bloom: number;
+  /** 同时最多显示多少只生物 */
+  maxCreatures: number;
   layers: LayerToggles;
 
-  // —— 动态 ——
-  motion: MotionMode;
-  followClock: boolean;
-  /** 开场生长动画 */
-  intro: boolean;
-
-  // —— 交互 ——
-  interaction: {
-    pointer: PointerMode;
-    clickThrough: boolean;
-    feeding: boolean;
-  };
+  // ——— 浏览器特色 ———
+  /** 点击生物切换标签页 */
+  clickToSwitch: boolean;
+  /** 悬停显示标签页标题 */
+  hoverTitles: boolean;
+  /**
+   * 演示模式：不读真实标签页，用一批假数据。
+   * 用于「让别人看看长什么样」以及非扩展环境下的预览。
+   */
+  demoMode: boolean;
 }
 
 export interface Config {
   version: number;
-  world: {
-    /** 共享世界的种子 */
-    seed: string;
-    /** 是否让两个表面共享同一个世界 */
-    shared: boolean;
-    /** 生态模拟开关（P4 起生效） */
-    ecology: boolean;
-    /** 时间流速倍率 */
-    timeScale: number;
-  };
   surfaces: Record<SurfaceId, SurfaceConfig>;
-  /** 无障碍与省电 */
-  respectReducedMotion: boolean;
-  pauseWhenHidden: boolean;
-  debug: boolean;
 }
 
-export const CONFIG_VERSION = 1;
+export const CONFIG_VERSION = 2;
+
+const LAYERS_DEFAULT: LayerToggles = {
+  surface: true,
+  caustics: true,
+  rays: true,
+  snow: true,
+  vignette: true,
+  creatures: true,
+  bloom: true,
+};
 
 /**
- * 覆盖层的默认值刻意保守。
+ * 新标签页的默认值：主场，给足画面。
  *
- * 它应该像窗玻璃上的一层水影，而不是一块糊住网页的贴纸。
+ * 帧率上限刻意设在 30 —— 深海是缓慢的场景，30fps 完全够，
+ * 而一个每次开新标签页都跑满 60fps 的插件会很快被用户关掉。
+ */
+export const NEWTAB_DEFAULTS: SurfaceConfig = {
+  enabled: true,
+  opacity: 1,
+  framing: 'fill',
+  zoom: 1,
+  anchorY: 'center',
+  theme: 'abyss',
+  quality: 'auto',
+  fpsCap: 30,
+  bloom: 1,
+  maxCreatures: 18,
+  layers: { ...LAYERS_DEFAULT },
+  clickToSwitch: true,
+  hoverTitles: true,
+  demoMode: false,
+};
+
+/**
+ * 覆盖层的默认值：客串，克制。
+ *
+ * 透明度只有 0.55、生物更少、默认关掉光柱 —— 它是盖在别人网页上的，
+ * 第一要务是**不打扰**。
  */
 export const OVERLAY_DEFAULTS: SurfaceConfig = {
   enabled: false,
+  opacity: 0.55,
+  framing: 'center',
+  zoom: 0.85,
+  anchorY: 'bottom',
+  theme: 'abyss',
   quality: 'low',
-  fpsCap: 30,
-  pixelRatioCap: 1.5,
-  opacity: 0.35,
-  blendMode: 'screen',
-  framing: 'fill',
-  zoom: 1,
-  anchor: 'center',
-  theme: 'lagoon',
-  background: 'transparent',
-  separateSeed: false,
-  seed: '',
-  layers: {
-    backMurk: false,
-    hardscape: false,
-    substrate: false,
-    flora: true,
-    fauna: false,
-    particulates: true,
-    caustics: true,
-    godRays: true,
-    glass: false,
-    hud: false,
-  },
-  motion: 'calm',
-  followClock: true,
-  intro: false,
-  interaction: {
-    pointer: 'none',
-    clickThrough: true,
-    feeding: false,
-  },
+  fpsCap: 24,
+  bloom: 0.8,
+  maxCreatures: 9,
+  layers: { ...LAYERS_DEFAULT, rays: false, vignette: false },
+  clickToSwitch: false,
+  hoverTitles: false,
+  demoMode: false,
 };
 
-export const NEWTAB_DEFAULTS: SurfaceConfig = {
-  enabled: true,
-  quality: 'auto',
-  fpsCap: 60,
-  pixelRatioCap: 2,
-  opacity: 1,
-  blendMode: 'normal',
-  framing: 'fill',
-  zoom: 1,
-  anchor: 'center',
-  theme: 'reef',
-  background: 'generative',
-  separateSeed: false,
-  seed: '',
-  layers: {
-    backMurk: true,
-    hardscape: true,
-    substrate: true,
-    flora: true,
-    fauna: true,
-    particulates: true,
-    caustics: true,
-    godRays: true,
-    glass: true,
-    hud: true,
-  },
-  motion: 'full',
-  followClock: true,
-  intro: true,
-  interaction: {
-    pointer: 'full',
-    clickThrough: false,
-    feeding: true,
-  },
-};
-
-export function defaultConfig(seed = randomSeedString()): Config {
+export function defaultConfig(): Config {
   return {
     version: CONFIG_VERSION,
-    world: {
-      seed,
-      shared: true,
-      ecology: true,
-      timeScale: 1,
-    },
     surfaces: {
-      newtab: structuredClone(NEWTAB_DEFAULTS),
-      overlay: structuredClone(OVERLAY_DEFAULTS),
+      newtab: { ...NEWTAB_DEFAULTS, layers: { ...LAYERS_DEFAULT } },
+      overlay: {
+        ...OVERLAY_DEFAULTS,
+        layers: { ...LAYERS_DEFAULT, rays: false, vignette: false },
+      },
     },
-    respectReducedMotion: true,
-    pauseWhenHidden: true,
-    debug: false,
   };
 }
 
+export function defaultSurface(id: SurfaceId): SurfaceConfig {
+  return id === 'newtab' ? NEWTAB_DEFAULTS : OVERLAY_DEFAULTS;
+}
+
 // ————————————————————————————————————————————————————————————
-// 合并、迁移与校验
+// 校验
 // ————————————————————————————————————————————————————————————
 
-type Json = Record<string, unknown>;
-
-const isPlainObject = (v: unknown): v is Json =>
+const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/**
- * 深合并：只覆盖 `patch` 里显式给出的字段。
- *
- * 数组整体替换而不是逐项合并 —— 部分合并数组几乎总是错的。
- */
-export function deepMerge<T>(base: T, patch: unknown): T {
-  if (!isPlainObject(patch)) return base;
-  if (!isPlainObject(base)) return patch as T;
-
-  const out: Json = { ...base };
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) continue;
-    const prev = out[key];
-    out[key] = isPlainObject(value) && isPlainObject(prev) ? deepMerge(prev, value) : value;
-  }
-  return out as T;
-}
-
-function clamp(v: unknown, lo: number, hi: number, fallback: number): number {
-  return typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback;
-}
-
-function oneOf<T extends string>(v: unknown, allowed: readonly T[], fallback: T): T {
-  return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
+function num(v: unknown, lo: number, hi: number, fallback: number): number {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return fallback;
+  return Math.min(hi, Math.max(lo, v));
 }
 
 function bool(v: unknown, fallback: boolean): boolean {
   return typeof v === 'boolean' ? v : fallback;
 }
 
-function sanitizeSurface(raw: unknown, fallback: SurfaceConfig): SurfaceConfig {
-  const merged = deepMerge(fallback, raw);
-  const l = deepMerge(fallback.layers, merged.layers);
-  const i = deepMerge(fallback.interaction, merged.interaction);
+function pick<T extends string>(v: unknown, allowed: readonly T[], fallback: T): T {
+  return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
+}
 
+function sanitizeLayers(raw: unknown, base: LayerToggles): LayerToggles {
+  const r = isObj(raw) ? raw : {};
+  const out = { ...base };
+  for (const k of Object.keys(base) as Array<keyof LayerToggles>) {
+    out[k] = bool(r[k], base[k]);
+  }
+  return out;
+}
+
+export function sanitizeSurface(raw: unknown, id: SurfaceId): SurfaceConfig {
+  const base = defaultSurface(id);
+  const r = isObj(raw) ? raw : {};
   return {
-    enabled: bool(merged.enabled, fallback.enabled),
-    quality: oneOf(merged.quality, ['auto', 'low', 'medium', 'high'] as const, fallback.quality),
-    fpsCap: (() => {
-      const v = clamp(merged.fpsCap, 15, 60, fallback.fpsCap);
-      return (v >= 60 ? 60 : v >= 30 ? 30 : 15) as 15 | 30 | 60;
-    })(),
-    pixelRatioCap: clamp(merged.pixelRatioCap, 1, 3, fallback.pixelRatioCap),
-    opacity: clamp(merged.opacity, 0, 1, fallback.opacity),
-    blendMode: oneOf(
-      merged.blendMode,
-      ['normal', 'screen', 'multiply', 'luminosity'] as const,
-      fallback.blendMode,
-    ),
-    framing: oneOf(
-      merged.framing,
-      ['fill', 'letterbox', 'bottom', 'porthole'] as const,
-      fallback.framing,
-    ),
-    zoom: clamp(merged.zoom, 0.4, 3, fallback.zoom),
-    anchor: oneOf(merged.anchor, ['top', 'center', 'bottom'] as const, fallback.anchor),
-    theme: oneOf(
-      merged.theme,
-      ['reef', 'planted', 'blackwater', 'lagoon', 'abyss'] as const,
-      fallback.theme,
-    ),
-    background: oneOf(
-      merged.background,
-      ['tank', 'generative', 'transparent', 'page'] as const,
-      fallback.background,
-    ),
-    separateSeed: bool(merged.separateSeed, fallback.separateSeed),
-    seed: typeof merged.seed === 'string' ? merged.seed.slice(0, 64) : fallback.seed,
-    layers: {
-      backMurk: bool(l.backMurk, fallback.layers.backMurk),
-      hardscape: bool(l.hardscape, fallback.layers.hardscape),
-      substrate: bool(l.substrate, fallback.layers.substrate),
-      flora: bool(l.flora, fallback.layers.flora),
-      fauna: bool(l.fauna, fallback.layers.fauna),
-      particulates: bool(l.particulates, fallback.layers.particulates),
-      caustics: bool(l.caustics, fallback.layers.caustics),
-      godRays: bool(l.godRays, fallback.layers.godRays),
-      glass: bool(l.glass, fallback.layers.glass),
-      hud: bool(l.hud, fallback.layers.hud),
-    },
-    motion: oneOf(
-      merged.motion,
-      ['full', 'calm', 'reduced', 'still'] as const,
-      fallback.motion,
-    ),
-    followClock: bool(merged.followClock, fallback.followClock),
-    intro: bool(merged.intro, fallback.intro),
-    interaction: {
-      pointer: oneOf(i.pointer, ['none', 'ripple', 'full'] as const, fallback.interaction.pointer),
-      clickThrough: bool(i.clickThrough, fallback.interaction.clickThrough),
-      feeding: bool(i.feeding, fallback.interaction.feeding),
-    },
+    enabled: bool(r['enabled'], base.enabled),
+    opacity: num(r['opacity'], 0.05, 1, base.opacity),
+    framing: pick(r['framing'], ['fill', 'center', 'letterbox'] as const, base.framing),
+    zoom: num(r['zoom'], 0.4, 2.5, base.zoom),
+    anchorY: pick(r['anchorY'], ['top', 'center', 'bottom'] as const, base.anchorY),
+    theme: isThemeName(r['theme']) ? r['theme'] : base.theme,
+    quality: pick(r['quality'], ['auto', 'low', 'medium', 'high'] as const, base.quality),
+    // 帧率上限卡在 5..60：低于 5 看起来是卡死，高于 60 没意义
+    fpsCap: Math.round(num(r['fpsCap'], 5, 60, base.fpsCap)),
+    bloom: num(r['bloom'], 0, 2.5, base.bloom),
+    maxCreatures: Math.round(num(r['maxCreatures'], 1, 40, base.maxCreatures)),
+    layers: sanitizeLayers(r['layers'], base.layers),
+    clickToSwitch: bool(r['clickToSwitch'], base.clickToSwitch),
+    hoverTitles: bool(r['hoverTitles'], base.hoverTitles),
+    demoMode: bool(r['demoMode'], base.demoMode),
   };
 }
 
 /**
- * 接受任意来源的数据（存储里翻出来的、旧的、被手改坏的），
- * 产出一个一定合法的 Config。宁可退回默认值，也不要让一个坏字段崩掉整个渲染。
+ * 把任意输入收拾成一份合法配置。
+ *
+ * 逐字段校验而不是整体丢弃：用户改坏了一个字段，不该让他丢掉其他所有设置。
  */
 export function sanitizeConfig(raw: unknown): Config {
-  const base = defaultConfig();
-  if (!isPlainObject(raw)) return base;
-  const merged = deepMerge(base, raw);
-
-  const seed =
-    typeof merged.world?.seed === 'string' && merged.world.seed.trim()
-      ? merged.world.seed.trim().slice(0, 64)
-      : base.world.seed;
-
+  const r = isObj(raw) ? raw : {};
+  const surfaces = isObj(r['surfaces']) ? r['surfaces'] : {};
   return {
     version: CONFIG_VERSION,
-    world: {
-      seed,
-      shared: bool(merged.world?.shared, base.world.shared),
-      ecology: bool(merged.world?.ecology, base.world.ecology),
-      timeScale: clamp(merged.world?.timeScale, 0.1, 20, base.world.timeScale),
-    },
     surfaces: {
-      newtab: sanitizeSurface(merged.surfaces?.newtab, NEWTAB_DEFAULTS),
-      overlay: sanitizeSurface(merged.surfaces?.overlay, OVERLAY_DEFAULTS),
+      newtab: sanitizeSurface(surfaces['newtab'], 'newtab'),
+      overlay: sanitizeSurface(surfaces['overlay'], 'overlay'),
     },
-    respectReducedMotion: bool(merged.respectReducedMotion, base.respectReducedMotion),
-    pauseWhenHidden: bool(merged.pauseWhenHidden, base.pauseWhenHidden),
-    debug: bool(merged.debug, base.debug),
   };
 }
 
-/**
- * 这个表面实际使用的种子。
- *
- * 共享世界模式下两个表面拿到同一个种子 —— 于是它们算出来的是同一个世界，
- * 只是渲染方式不同。这正是 DESIGN.md §3.1 那个「不需要仲裁者」的性质。
- */
-export function effectiveSeed(config: Config, surface: SurfaceId): string {
-  const sc = config.surfaces[surface];
-  if (sc.separateSeed && sc.seed.trim()) return sc.seed.trim();
-  return config.world.seed || 'default';
+// ————————————————————————————————————————————————————————————
+// 解析质量档位
+// ————————————————————————————————————————————————————————————
+
+export interface ResolvedQuality {
+  /** 渲染缩放 0.5..1 */
+  renderScale: number;
+  /** 细节等级 0..2，影响着色器里的循环次数 */
+  detail: 0 | 1 | 2;
 }
 
-/** 用户手改了种子输入框里的内容时调用。 */
-export function setSurfaceSeed(config: Config, surface: SurfaceId, input: string): void {
-  const sc = config.surfaces[surface];
-  sc.separateSeed = true;
-  sc.seed = normalizeSeed(input);
+/**
+ * 把 `auto` 解析成具体档位。
+ *
+ * `auto` 只依据「是不是软件光栅化」判断 —— 更聪明的做法（按实测帧时
+ * 动态升降）曾经有，但那需要一套测量与迟滞逻辑，而收益在真实使用里
+ * 很小：这台机器要么一直跑得动，要么一直跑不动。
+ */
+export function resolveQuality(
+  quality: Quality,
+  software: boolean,
+  fpsCap: number,
+): ResolvedQuality {
+  if (quality === 'auto') {
+    if (software) return { renderScale: 0.62, detail: 0 };
+    return fpsCap <= 30 ? { renderScale: 0.9, detail: 1 } : { renderScale: 1, detail: 2 };
+  }
+  if (quality === 'low') return { renderScale: 0.62, detail: 0 };
+  if (quality === 'medium') return { renderScale: 0.85, detail: 1 };
+  return { renderScale: 1, detail: 2 };
+}
+
+/** 供设置页显示：一份配置有多「重」。 */
+export function configWeight(c: SurfaceConfig): number {
+  let w = 0;
+  if (c.layers.bloom) w += 3;
+  if (c.layers.caustics) w += 1;
+  if (c.layers.snow) w += 1;
+  if (c.layers.rays) w += 1;
+  if (c.layers.creatures) w += 2 + c.maxCreatures * 0.2;
+  return w;
 }

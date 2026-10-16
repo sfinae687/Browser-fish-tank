@@ -2,48 +2,44 @@
 <html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>计算水族箱 · 设置</title>
-    <link rel="stylesheet" href="./options.css" />
+    <title>深海 · 设置</title>
+    <link rel="stylesheet" href="options.css" />
   </head>
   <body>
-    <div class="app">
-      <!-- 实时预览。调不透明度、主题、构图时没有它就是在盲调。 -->
+    <div class="wrap">
+      <!-- 左侧：实时预览。用的是**表单里当前的值**，不是已保存的值 ——
+           改一个滑块就该立刻看到效果。 -->
       <aside class="preview">
-        <div class="preview__frame">
-          <canvas id="preview-canvas"></canvas>
-          <div id="preview-error" class="preview__error" hidden></div>
+        <canvas id="preview"></canvas>
+        <div class="preview__label">
+          <span id="preview-surface">新标签页</span>
+          <span id="preview-note"></span>
         </div>
-
-        <div class="preview__bar">
-          <div class="preview__which" id="preview-which">新标签页</div>
-          <div class="preview__seed" id="preview-seed">—</div>
-        </div>
-
-        <p class="preview__note" id="preview-note">
-          预览使用该表面自己的配置渲染，与真实效果一致。
-        </p>
       </aside>
 
       <main class="panel">
-        <header class="panel__head">
-          <div>
-            <h1 class="panel__title">计算水族箱</h1>
-            <p class="panel__sub">鱼缸不是被画出来的，是被算出来的。</p>
-          </div>
-          <div class="panel__badge" id="backend-badge">存储：—</div>
+        <header class="head">
+          <h1>深海</h1>
+          <p class="head__sub">
+            打开的每个标签页都是水里的一只发光生物。休眠的会暗下去，
+            出声的会亮起来，点一下就能切过去。
+          </p>
         </header>
 
-        <nav class="tabs" id="tabs" role="tablist"></nav>
+        <div class="tabs" role="tablist">
+          <button class="tabs__btn is-active" data-surface="newtab" role="tab">新标签页</button>
+          <button class="tabs__btn" data-surface="overlay" role="tab">页面覆盖层</button>
+        </div>
 
-        <div class="sections" id="sections"></div>
+        <div id="form"></div>
 
-        <footer class="panel__foot">
-          <span id="save-state" class="save-state">已保存</span>
+        <footer class="foot">
+          <span id="save-state" class="foot__state"></span>
+          <button id="reset" class="foot__btn" type="button">恢复默认</button>
         </footer>
       </main>
     </div>
 
-    <script type="module" src="./options.js"></script>
+    <script type="module" src="options.js"></script>
   </body>
 </html>

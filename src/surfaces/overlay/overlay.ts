@@ -1,168 +1,148 @@
 /**
- * 覆盖层表面（content script）。
+ * 页面覆盖层。把一片深海盖在任意网页上。
  *
- * 这个表面运行在**别人的网页里**，所以纪律比功能重要：
+ * ## 三条硬约束
  *
- *   1. 全部内容装进 Shadow DOM —— 页面的 CSS 进不来，我们的 CSS 也出不去
- *   2. pointer-events 恒为 none —— 覆盖层绝不能吃掉用户的点击。
- *      交互（投食、涟漪）在 P5 会用**小的命中区域**实现，
- *      而不是把整个视口变成热区。整屏拦截点击是不可接受的。
- *   3. 不读页面任何内容、不发任何网络请求
- *   4. 只在用户显式开启时才注入（见 bg/service-worker.ts 的运行时注册）
+ * **一、绝不挡住页面。** 宿主元素和画布都是 `pointer-events: none`。
+ * 这片海是装饰，网页才是主体 —— 一次「点不动链接」就足以让用户卸载。
+ * 代价是覆盖层里不能点生物切标签页（那需要指针事件），所以这一项
+ * 在覆盖层上默认关闭、而且不提供开关。
  *
- * 构建产物必须是 IIFE：MV3 的 content script 不支持 ES module。
+ * **二、用 Shadow DOM。** 宿主页面可能有任何全局 CSS（`* { position: static }`
+ * 之流），不隔离的话样式会被打得到处都是。
  *
- * @see DESIGN.md §8
+ * **三、只在普通网页上出现。** `chrome://`、扩展页、about: 之类的地方
+ * 没有意义也不允许注入。
+ *
+ * ## 覆盖层的定位
+ *
+ * 它是「客串」不是「主场」：默认透明度 0.55、生物更少、关掉光柱和暗角、
+ * 帧率上限 24。目标是**瞥一眼觉得好看，但不会干扰读正文**。
  */
 
 import { AquariumRunner } from '../runner.js';
-import { loadConfig, onConfigChanged } from '../../core/storage.js';
 
-const HOST_ID = '__computed_aquarium_overlay__';
-const TEARDOWN_MESSAGE = 'aqua.overlay.teardown';
+const HOST_ID = 'aqua-overlay-host';
 
-const SHADOW_STYLE = /* css */ `
-  :host { all: initial; }
-  .wrap {
-    position: fixed;
-    inset: 0;
-    width: 100vw;
-    height: 100vh;
-    /* 恒为 none：覆盖层永远不吃点击 */
-    pointer-events: none;
-    z-index: 2147483647;
-    contain: strict;
-  }
-  canvas {
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    display: block;
-    pointer-events: none;
-  }
-`;
+/** 不该注入的地方。 */
+function isInjectablePage(): boolean {
+  const p = location.protocol;
+  if (p !== 'http:' && p !== 'https:') return false;
+  // 有些站点会把自己的顶层框架换成 file: 之类，双保险
+  return true;
+}
 
 interface OverlayHandle {
   host: HTMLElement;
   runner: AquariumRunner;
-  unsubscribe: () => void;
-  onMessage: (msg: unknown) => void;
-  dispose: () => void;
+  shadow: ShadowRoot;
 }
 
 let handle: OverlayHandle | null = null;
 
-async function mount(): Promise<void> {
-  if (handle) return;
-  // 已经在跑就别重复注入（比如扩展被重载后 content script 又跑了一次）
-  if (document.getElementById(HOST_ID)) return;
-
-  const config = await loadConfig();
-  if (!config.surfaces.overlay.enabled) return;
-
-  // ——— 建造隔离的 DOM ———
+function buildDom(): { host: HTMLElement; shadow: ShadowRoot; canvas: HTMLCanvasElement } {
   const host = document.createElement('div');
   host.id = HOST_ID;
-  // 宿主元素本身的样式也内联写死，避免被页面的 `div { }` 规则影响
-  host.setAttribute(
-    'style',
-    'position:fixed;inset:0;pointer-events:none;z-index:2147483647;margin:0;padding:0;border:0;',
-  );
+  // 宿主本身绝不接受指针事件
+  host.style.cssText = [
+    'position:fixed',
+    'inset:0',
+    'z-index:2147483646',
+    'pointer-events:none',
+    'contain:strict',
+  ].join(';');
 
-  const shadow = host.attachShadow({ mode: 'closed' });
+  const shadow = host.attachShadow({ mode: 'open' });
+
   const style = document.createElement('style');
-  style.textContent = SHADOW_STYLE;
-
-  const wrap = document.createElement('div');
-  wrap.className = 'wrap';
+  style.textContent = `
+    :host { all: initial; }
+    canvas {
+      position: fixed;
+      inset: 0;
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      pointer-events: none;
+    }
+  `;
 
   const canvas = document.createElement('canvas');
-  canvas.setAttribute('aria-hidden', 'true');
+  shadow.append(style, canvas);
+  document.documentElement.appendChild(host);
 
-  wrap.appendChild(canvas);
-  shadow.appendChild(style);
-  shadow.appendChild(wrap);
+  return { host, shadow, canvas };
+}
 
-  // 挂到 <html> 而不是 <body>：有些页面会把 body 设成 flex 或加 transform，
-  // 那会让 position:fixed 的参照系不再是视口
-  (document.documentElement ?? document.body).appendChild(host);
+/** 覆盖层的画布尺寸要跟着视口走 —— 页面滚动时视口不变，窗口变化时才变。 */
+function syncCanvasSize(canvas: HTMLCanvasElement): void {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  canvas.style.width = `${w}px`;
+  canvas.style.height = `${h}px`;
+}
 
-  // ——— 启动渲染 ———
+async function enable(): Promise<void> {
+  if (handle || !isInjectablePage()) return;
+
+  const { host, shadow, canvas } = buildDom();
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.max(2, Math.floor(window.innerWidth * dpr));
+  canvas.height = Math.max(2, Math.floor(window.innerHeight * dpr));
+  syncCanvasSize(canvas);
+
   const runner = new AquariumRunner({ surface: 'overlay', canvas });
 
-  const unsubscribe = onConfigChanged((next) => {
-    // 用户在设置页关掉了覆盖层 —— 立刻自己拆掉
-    if (!next.surfaces.overlay.enabled) {
-      dispose();
-      return;
-    }
-    runner.updateConfig(next);
-  });
-
-  // ——— 响应拆卸指令 ———
-  // unregisterContentScripts 只阻止**将来**的注入，已经跑起来的实例
-  // 必须靠消息通知才会消失。
-  const onMessage = (msg: unknown): void => {
-    if (
-      typeof msg === 'object' &&
-      msg !== null &&
-      (msg as { t?: string }).t === TEARDOWN_MESSAGE
-    ) {
-      dispose();
-    }
-  };
+  const onResize = (): void => syncCanvasSize(canvas);
+  window.addEventListener('resize', onResize, { passive: true });
 
   try {
-    if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
-      chrome.runtime.onMessage.addListener(onMessage);
-    }
-  } catch {
-    // 扩展上下文失效（重新加载扩展后旧 content script 会变成孤儿）。
-    // 这时什么也做不了，安静地继续渲染即可。
-  }
-
-  function dispose(): void {
-    unsubscribe();
-    try {
-      chrome.runtime?.onMessage?.removeListener(onMessage);
-    } catch {
-      /* 忽略 */
-    }
-    runner.dispose();
+    await runner.start();
+  } catch (err) {
+    window.removeEventListener('resize', onResize);
     host.remove();
-    handle = null;
-  }
-
-  await runner.start();
-
-  if (runner.currentError) {
-    // 渲染器起不来就别在别人的页面上留一个空 div
-    console.warn('[计算水族箱] 覆盖层渲染器启动失败：', runner.currentError);
-    dispose();
+    // content script 里不该把错误抛回页面上下文，静默失败即可
+    console.warn('[深海] 覆盖层启动失败', err);
     return;
   }
 
-  handle = { host, runner, unsubscribe, onMessage, dispose };
+  handle = { host, runner, shadow };
+  (window as unknown as Record<string, unknown>)['__aquaOverlay'] = { ready: true };
 }
 
-function unmount(): void {
-  handle?.dispose();
+function disable(): void {
+  if (!handle) return;
+  handle.runner.dispose();
+  handle.host.remove();
   handle = null;
+  delete (window as unknown as Record<string, unknown>)['__aquaOverlay'];
 }
 
-// 页面被 BFCache 缓存时应该停止渲染（省电），恢复时再起来
-window.addEventListener('pagehide', unmount);
-window.addEventListener('pageshow', (e) => {
-  if ((e as PageTransitionEvent).persisted) void mount();
-});
-
-// 覆盖层在用户显式开启前不会被注入（见 bg/service-worker.ts 的运行时注册）。
-void (async () => {
+/**
+ * 读配置决定开关。
+ *
+ * content script 是**按需注册**的：只有用户主动打开覆盖层、并授予
+ * `<all_urls>` 之后，service worker 才会把它注册进来。所以这里
+ * 出现就意味着用户想要它 —— 但仍然要读一次配置，因为用户可能
+ * 只是把透明度调到 0 而不是关掉。
+ */
+async function syncWithConfig(): Promise<void> {
   try {
-    await mount();
-  } catch (err) {
-    console.warn('[计算水族箱] 覆盖层注入失败：', err);
-    unmount();
+    const { loadConfig, onConfigChanged } = await import('../../core/storage.js');
+    const apply = (cfg: Awaited<ReturnType<typeof loadConfig>>): void => {
+      const on = cfg.surfaces.overlay.enabled;
+      if (on) void enable();
+      else disable();
+    };
+    apply(await loadConfig());
+    onConfigChanged(apply);
+  } catch {
+    // 拿不到配置就按默认不开
   }
-})();
+}
+
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => void syncWithConfig(), { once: true });
+} else {
+  void syncWithConfig();
+}

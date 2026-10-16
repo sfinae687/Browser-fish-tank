@@ -4,59 +4,33 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>新标签页</title>
-    <link rel="stylesheet" href="./newtab.css" />
+    <link rel="stylesheet" href="newtab.css" />
   </head>
   <body>
-    <canvas id="tank" aria-label="计算生成的水族箱"></canvas>
+    <!-- 深海。生物画在这块画布上，每个生物对应一个打开的标签页。 -->
+    <canvas id="tank" aria-label="深海"></canvas>
 
-    <!-- 开场生长时显示，长成后淡出。它把这个项目的主张说清楚了：
-         缸不是画出来的，是算出来的。 -->
-    <div id="intro" class="intro" aria-hidden="true">
-      <div class="intro__seed">
-        <span class="intro__label">种子</span>
-        <span id="intro-seed" class="intro__value">—</span>
-      </div>
-      <div class="intro__bar"><div id="intro-fill" class="intro__fill"></div></div>
-      <div id="intro-stage" class="intro__stage">基质落定…</div>
+    <!-- 悬停时跟着指针出现的标签页标题 -->
+    <div id="tip" class="tip" hidden></div>
+
+    <!-- 时钟。新标签页该有的东西，做得很轻，不抢画面。 -->
+    <div class="clock">
+      <div id="time" class="clock__time">--:--</div>
+      <div id="date" class="clock__date">—</div>
     </div>
 
-    <!-- 选中的鱼。点水投食，点鱼选中；选满两条就能杂交。 -->
-    <div id="breed" class="breed" hidden>
-      <div class="breed__row">
-        <span id="breed-a" class="breed__slot">未选</span>
-        <span class="breed__times">×</span>
-        <span id="breed-b" class="breed__slot">未选</span>
-      </div>
-      <div id="breed-info" class="breed__info">点水面投食 · 点鱼选中</div>
-      <div class="breed__actions">
-        <button id="breed-go" class="button button--small" type="button" disabled>杂交</button>
-        <button id="fish-copy" class="button button--small" type="button">复制种子码</button>
-      </div>
-    </div>
-
+    <!-- 状态。默认极淡，鼠标不动一会儿就完全隐去。 -->
     <div id="hud" class="hud">
-      <div class="hud__left">
-        <div id="clock" class="clock">--:--</div>
-        <div id="date" class="date">—</div>
-        <div id="eco" class="eco">—</div>
-      </div>
-
-      <div class="hud__right">
-        <div id="status" class="status">
-          <span id="status-dot" class="status__dot"></span>
-          <span id="status-text" class="status__text">初始化…</span>
-        </div>
-        <button id="options" class="link" type="button">设置</button>
-      </div>
+      <span id="status">正在下潜…</span>
+      <button id="titles" class="hud__link" type="button" hidden>显示标签页标题</button>
     </div>
 
-    <!-- WebGL2 起不来，或者用户主动关掉了新标签页鱼缸时显示 -->
+    <!-- WebGL 起不来时的兜底 -->
     <div id="fallback" class="fallback" hidden>
-      <h1>计算水族箱</h1>
-      <p id="fallback-msg">渲染器没有启动。</p>
-      <button id="fallback-options" class="button" type="button">打开设置</button>
+      <p id="fallback-msg">这片海没能加载出来。</p>
+      <button id="fallback-options" class="fallback__btn" type="button">打开设置</button>
     </div>
 
-    <script type="module" src="./newtab.js"></script>
+    <script type="module" src="newtab.js"></script>
   </body>
 </html>

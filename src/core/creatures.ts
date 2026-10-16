@@ -332,7 +332,7 @@ export interface FlockOptions {
 export class Flock {
   private readonly items: Creature[] = [];
   private readonly byTab = new Map<number, Creature>();
-  private readonly max: number;
+  private max: number;
 
   constructor(opts: FlockOptions = {}) {
     this.max = Math.max(1, opts.maxCreatures ?? DEFAULT_MAX_CREATURES);
@@ -340,6 +340,11 @@ export class Flock {
 
   get list(): readonly Creature[] {
     return this.items;
+  }
+
+  /** 配置改了生物数量上限时调用。 */
+  setMax(n: number): void {
+    this.max = Math.max(1, Math.round(n));
   }
 
   get count(): number {
