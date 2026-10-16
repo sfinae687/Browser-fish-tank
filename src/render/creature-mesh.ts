@@ -62,8 +62,8 @@ export const MAX_SPINE_POINTS = 24;
  * 不存在的顶点 —— 表现是控制台刷 "too many errors"，画面却「看起来还行」，
  * 非常容易漏掉。最长的体型（深海带鱼，20 段）需要约 450 顶点 / 1450 索引。
  */
-export const MAX_CREATURE_VERTICES = 768;
-export const MAX_CREATURE_INDICES = 2048;
+export const MAX_CREATURE_VERTICES = 1400;
+export const MAX_CREATURE_INDICES = 4096;
 
 /**
  * 身体横截面上的采样行（归一化半高，从背缘到腹缘）。
@@ -74,7 +74,14 @@ export const MAX_CREATURE_INDICES = 2048;
 const BODY_ROWS = [1.0, 0.86, 0.58, 0.2, -0.2, -0.58, -0.86, -1.0] as const;
 
 /** 光晕的半径层级（归一化）。0..1 是身体，这里全部 > 1。 */
-const HALO_RINGS = [1.0, 1.22, 1.52, 1.95, 2.6] as const;
+/**
+ * 光晕的半径层级（归一化）。0..1 是身体，这里全部 > 1。
+ *
+ * ⚠️ 层数要够。衰减曲线是连续的，但网格只在**这些半径上**有顶点，
+ * 环与环之间是线性插值 —— 层数太少时，曲率大的那一段会出现
+ * 一圈圈看得见的硬色带（水母的伞上尤其明显，第一版只有 5 层）。
+ */
+const HALO_RINGS = [1.0, 1.12, 1.26, 1.43, 1.63, 1.88, 2.2, 2.6] as const;
 
 /** 剖面控制点：[沿体长 0..1, 半高倍率 0..1] */
 type ProfilePoint = readonly [number, number];
@@ -682,14 +689,27 @@ export function buildCreatureMesh(shape: CreatureShape): CreatureMeshData {
       const h = halfHeight(shape, u);
       const spine = u * segs;
       const y = -h * 0.82;
+      // ⚠️ 光点必须是「中心 + 四周」的扇形，**不能**只用四个边缘顶点。
+      //
+      // 四个边缘顶点的 aEdge 全是 1，片元里插值出来也就没有变化 ——
+      // 于是着色器里那段「中心亮、边缘淡」的柔和光斑完全失效，
+      // 画出来还是一个硬的菱形。第一版就是这样：改了着色器却没改网格。
       const base = vertices.length / CREATURE_FLOATS_PER_VERTEX;
       const bell = Math.sin((Math.PI * (k + 0.5)) / n);
       const amt = 0.55 + bell * 0.45;
-      push(spine, y + r, 0, u, -1.0, 1, amt, 0.0);
-      push(spine + 0.1, y, r * 0.85, u, -1.0, 1, amt, 0.0);
-      push(spine, y - r, 0, u, -1.0, 1, amt, 0.0);
-      push(spine - 0.1, y, r * 0.85, u, -1.0, 1, amt, 0.0);
-      bodyIndices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+      // 中心：aEdge = 0
+      push(spine, y, 0, u, -1.0, 1, amt, 0.0);
+      // 四周：aEdge = 1（正好落在归一化半径的边界上）
+      push(spine, y + r, 0, u, -1.0, 1, amt, 1.0);
+      push(spine + 0.11, y, r * 0.8, u, -1.0, 1, amt, 1.0);
+      push(spine, y - r, 0, u, -1.0, 1, amt, 1.0);
+      push(spine - 0.11, y, r * 0.8, u, -1.0, 1, amt, 1.0);
+      bodyIndices.push(
+        base, base + 1, base + 2,
+        base, base + 2, base + 3,
+        base, base + 3, base + 4,
+        base, base + 4, base + 1,
+      );
     }
   }
 

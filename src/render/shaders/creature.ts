@@ -126,6 +126,30 @@ uniform float uHaloStrength;
 uniform float uOpacity;
 uniform float uTime;
 
+/**
+ * 解析覆盖率。
+ *
+ * vEdge 是归一化半径：0 在体轴，1 在轮廓上。轮廓之外没有几何，
+ * 所以只靠它做不到「边缘外侧」的覆盖 —— 但可以做到**边缘内侧一像素内的渐变**，
+ * 而那一像素正是锯齿的来源。
+ *
+ * 做法：把「离轮廓还有多远」换算成像素数（用 fwidth），
+ * 半像素以内给半透明、一像素以外给全不透明。
+ *
+ * 这一条是**去掉廉价感最有效的一笔**。没有它，所有轮廓都是硬锯齿，
+ * 而锯齿是最典型的「程序员美术」特征。
+ *
+ * （另外：GLSL 写在 JS 模板字面量里，**注释中不能出现反引号** ——
+ *   它会直接截断模板。这个坑踩到第四次了。）
+ */
+float edgeCoverage(float edge) {
+  // 1.6 是过渡宽度（像素）。1.0 太窄 —— 只软化了最外那一列像素，
+  // 在放大或高对比的边缘上仍然看得出台阶。
+  const float AA_WIDTH = 1.6;
+  float w = fwidth(edge);
+  return clamp((1.0 - edge) / max(w * AA_WIDTH, 1e-5) + 0.5, 0.0, 1.0);
+}
+
 void main() {
   bool isGlow = vFlags.x > 0.5;
 
@@ -147,10 +171,19 @@ void main() {
   // ——————— 发光器 ———————
   if (isGlow) {
     float amt = vFlags.y;
-    vec3 c = uGlow * (2.6 * amt * uGlowStrength);
-    // 过曝趋白
-    c = mix(c, vec3(1.0), clamp((amt - 0.6) * 0.5, 0.0, 0.55));
-    fragColor = vec4(c, 1.0 * uOpacity);
+    // vEdge 在这里是「离光点中心多远」：0 = 中心，1 = 边缘。
+    // 用平方衰减做出柔和的光斑，而不是一个硬菱形 ——
+    // 发光体没有硬边界，这是它看起来在发光的必要条件之一。
+    float d = clamp(vEdge, 0.0, 1.0);
+    float core = 1.0 - d * d;
+    float soft = core * core;
+    // 再叠一层极小的外围光晕，让亮点不至于像贴上去的方块
+    soft += smoothstep(1.0, 0.35, d) * 0.22;
+    vec3 c = uGlow * (2.6 * amt * soft * uGlowStrength);
+    c = mix(c, vec3(1.0), clamp((amt - 0.5) * 0.55 * soft, 0.0, 0.7));
+    // 边缘淡出：这里也需要抗锯齿，否则光点会有一圈硬边
+    float aa = edgeCoverage(clamp(d, 0.0, 1.0));
+    fragColor = vec4(c, clamp(soft, 0.0, 1.0) * uOpacity * mix(1.0, aa, 0.5));
     return;
   }
 
@@ -162,14 +195,21 @@ void main() {
     c = mix(c, vec3(1.0), rim * 0.22);
     // 半透明 —— 水母是「看得穿」的，这一点是它像水母的关键
     float alpha = mix(0.20, 0.62, rim);
+    // 抗锯齿：伞缘是这一层里对比度最高的边界，不处理会非常明显
+    alpha *= edgeCoverage(clamp(vEdge, 0.0, 1.0));
     fragColor = vec4(c, alpha * uOpacity);
     return;
   }
 
   // ——————— 水母：触手 ———————
   if (vKind >= 1.5) {
+    // vBody.y 在触手上是「横向位置」：-1 左缘 / 0 中线 / +1 右缘。
+    // 用它做一维抗锯齿 —— 细带子的锯齿比身体更扎眼。
+    float across = abs(clamp(vBody.y, -1.0, 1.0));
+    float w = fwidth(vBody.y);
+    float aa = clamp((1.0 - across) / max(w, 1e-5) + 0.5, 0.0, 1.0);
     vec3 c = uGlow * 0.55 * uGlowStrength;
-    fragColor = vec4(c, 0.42 * uOpacity);
+    fragColor = vec4(c, 0.42 * uOpacity * aa);
     return;
   }
 
@@ -182,7 +222,14 @@ void main() {
   if (fin > 0.02 && abs(vBody.y) > 1.05) {
     vec3 fc = uGlow * fin * uGlowStrength * 0.62;
     fc *= 0.55 + 0.5 * smoothstep(0.35, 1.0, vEdge);
-    fragColor = vec4(fc, mix(0.30, 0.58, fin) * uOpacity);
+    // 鳍根要**淡出到 0**，不能一上来就是 0.3 的不透明度 ——
+    // 那会在鳍和身体的交界处留下一条看得见的硬边，
+    // 放大看就是「几块多边形贴在一起」的感觉。
+    float root = smoothstep(0.02, 0.30, fin);
+    // 鳍尖也收一点，免得像被剪断
+    float tip = 1.0 - smoothstep(0.75, 1.0, vEdge) * 0.0;
+    float a = mix(0.30, 0.58, fin) * root * tip * edgeCoverage(clamp(vEdge, 0.0, 1.0));
+    fragColor = vec4(fc, a * uOpacity);
     return;
   }
 
@@ -195,7 +242,14 @@ void main() {
   // 头部比尾部亮一点 —— 感觉器官与发光器集中在头部
   float front = smoothstep(0.30, 0.0, u) * 0.16;
 
-  vec3 col = uBodyDark;
+  // 身体的基础明暗：**背亮腹暗**，中间连续过渡。
+  //
+  // 少了这一层，身体内部是一块均匀的黑，于是背脊高光看起来就是
+  // 「一条贴在黑块上的亮带子」而不是「圆柱受光」—— 廉价感的一大来源。
+  // 有了它，剪影内部才有体积。
+  float shade = 0.42 + 0.58 * smoothstep(-1.0, 1.0, v);
+  vec3 col = uBodyDark * (0.45 + 1.15 * shade);
+
   col += uGlow * (belly + front) * uGlowStrength * 0.32;
 
   // 自发光 + 被照亮，分开算：
@@ -203,13 +257,17 @@ void main() {
   col += uGlow * smoothstep(0.80, 1.0, vEdge) * uGlowStrength * 0.40;
   // 背脊高光（从上方来的水光）—— 这一笔给出形体的转折
   // 背脊高光（从上方来的水光）—— 这一笔给出形体的转折。
-  // 在近黑背景上，这一笔实际上是**身体唯一能被看见的部分**，
-  // 所以不能给得太含蓄。
-  float back = smoothstep(0.05, 0.85, v);
-  col += uLight * back * 0.85 * uGlowStrength;
+  //
+  // ⚠️ 过渡区间要**够宽**。第一版用的是 smoothstep(0.05, 0.85, v)，
+  // 在放大看时是一条边界清晰的色带 —— 那是「贴纸」而不是「形体」。
+  // 真实的光照在圆柱形的身体上是余弦式的连续过渡。
+  float back = smoothstep(-0.25, 1.0, v);
+  col += uLight * back * back * 0.95 * uGlowStrength;
   // 腹面也有一点微弱的环境反射，让剪影不至于下半截纯黑
   col += uLight * smoothstep(-0.35, -0.95, v) * 0.16 * uGlowStrength;
 
-  fragColor = vec4(col, 1.0 * uOpacity);
+  // 轮廓抗锯齿 —— 见 edgeCoverage 的说明
+  float cov = edgeCoverage(clamp(vEdge, 0.0, 1.0));
+  fragColor = vec4(col, cov * uOpacity);
 }
 `;
