@@ -1,0 +1,248 @@
+/**
+ * 生物。
+ *
+ * ## 一只生物是什么
+ *
+ * 在浏览器里，**一只生物对应一个标签页**。这是整个插件的核心概念：
+ * 它不只是屏保，它是一个可视化的标签页管理器。
+ *
+ * | 标签页状态 | 生物的表现 |
+ * |---|---|
+ * | 普通 | 正常游动 |
+ * | 休眠 / 已丢弃 | 暗淡蛰伏，几乎不动 |
+ * | 正在出声 | 辉光脉动，明显更亮 |
+ * | 已固定 | 体型更大，活动范围更窄（有领地感） |
+ * | 正在加载 | 从暗处渐显 |
+ *
+ * ## 为什么运动这么简单
+ *
+ * 上一版做了群集（分离、对齐、聚合）与生态驱动的位移。这一版全部去掉，
+ * 每只生物只走一条自己的缓慢路径。理由：
+ *
+ *   - 深海的生物本来就**稀疏而缓慢**，群集行为反而显得躁
+ *   - 没有累积状态，就没有快进问题、没有确定性约束、没有仲裁者
+ *   - 画面要的是「安静」，而群集天生是「热闹」的
+ *
+ * 于是运动变成 `位置 = f(时间)` 的纯函数 —— 两个表面各算各的也必然一致，
+ * 而且**不需要任何状态存储**。
+ *
+ * ## 随机性从哪来
+ *
+ * 每只生物的外观与路径参数由**标签页 id** 派生。同一个标签页永远是同一只
+ * 生物 —— 换个位置、重开浏览器都不会变。这是「认得出来」的前提。
+ */
+
+import { SHAPES, type ShapeName } from '../render/creature-mesh.js';
+
+/** 缸内水域范围。生物在这个矩形里活动。 */
+export const SWIM_BOUNDS = {
+  minX: 0.06,
+  maxX: 0.94,
+  minY: 0.14,
+  maxY: 0.86,
+} as const;
+
+export interface Creature {
+  /** 稳定 id（标签页 id，观赏模式用序号） */
+  id: number;
+  /** 对应的标签页 id。-1 = 观赏模式的野生生物，不可点击。 */
+  tabId: number;
+  shape: ShapeName;
+
+  /** 巡游中心（缸内 uv） */
+  homeX: number;
+  homeY: number;
+  /** 三组路径参数：两个横向频率 + 一个纵向频率，互不通约以免走成闭合环 */
+  w1: number;
+  w2: number;
+  w3: number;
+  p1: number;
+  p2: number;
+  p3: number;
+  /** 游荡幅度 */
+  wander: number;
+  /** 速度倍率 */
+  speed: number;
+  /** 体型倍率 */
+  scale: number;
+
+  /** 亮度倍率。休眠的标签页会很低。 */
+  energy: number;
+  /** 是否用点缀色 */
+  alt: boolean;
+  /** 0..1 的显隐。新开/关闭标签页时渐入渐出。 */
+  fade: number;
+
+  // ——— 标签页信息（供交互与悬停） ———
+  title: string;
+  pinned: boolean;
+  audible: boolean;
+  discarded: boolean;
+  active: boolean;
+}
+
+// ————————————————————————————————————————————————————————————
+// 确定性随机（按标签页 id 派生，不需要存）
+// ————————————————————————————————————————————————————————————
+
+/**
+ * 由 id 派生一个 0..1 的稳定伪随机数。
+ *
+ * 用一个整数哈希而不是 Math.random：同一个标签页必须是同一只生物。
+ * 这里**不需要**上一版那种「跨平台逐位一致」的严格要求 ——
+ * 没有累积状态，两台机器上长得略有不同也无所谓。
+ */
+function hash01(id: number, salt: number): number {
+  let h = (id * 0x9e3779b1 + salt * 0x85ebca6b) >>> 0;
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x2545f491) >>> 0;
+  h ^= h >>> 13;
+  h = Math.imul(h, 0x27d4eb2f) >>> 0;
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/** 在 [lo, hi) 里取一个由 id 决定的稳定随机数。 */
+function pick(id: number, salt: number, lo: number, hi: number): number {
+  return lo + hash01(id, salt) * (hi - lo);
+}
+
+/**
+ * 按权重挑一个体型。
+ *
+ * 权重是有意的：灯笼鱼最常见，鮟鱇最少见。一缸里如果每种体型数量一样多，
+ * 看起来就像选美比赛的名单而不是一片海。
+ */
+const SHAPE_POOL: ShapeName[] = (() => {
+  const pool: ShapeName[] = [];
+  const names = Object.keys(SHAPES) as ShapeName[];
+  for (const name of names) {
+    const w = SHAPES[name].weight;
+    // 权重转成重复次数，取整但至少 1
+    const n = Math.max(1, Math.round(w * 6));
+    for (let i = 0; i < n; i++) pool.push(name);
+  }
+  return pool;
+})();
+
+function shapeForId(id: number): ShapeName {
+  const idx = Math.floor(hash01(id, 991) * SHAPE_POOL.length) % SHAPE_POOL.length;
+  return SHAPE_POOL[idx] as ShapeName;
+}
+
+export interface CreatureSeedInput {
+  /** 稳定 id。标签页用 tabId，观赏模式用序号。 */
+  id: number;
+  tabId: number;
+  title: string;
+  pinned: boolean;
+  audible: boolean;
+  discarded: boolean;
+  active: boolean;
+  /** 这只生物在画面里的序号，用于摊开初始位置 */
+  index: number;
+}
+
+/**
+ * 由标签页信息造一只生物。
+ *
+ * 外观只取决于 id（稳定），状态（亮度、体型加成）取决于标签页状态（实时）。
+ * 这条分界很重要：状态变化时生物**不该换一个样子**，只该变亮变暗。
+ */
+export function makeCreature(input: CreatureSeedInput): Creature {
+  const { id } = input;
+  const shape = shapeForId(id);
+
+  // 固定标签页有领地感：中心更靠下、游荡幅度更小、体型更大
+  const pinnedBias = input.pinned ? 1 : 0;
+
+  const homeX = pick(id, 1, SWIM_BOUNDS.minX, SWIM_BOUNDS.maxX);
+  const homeY = pick(id, 2, SWIM_BOUNDS.minY, SWIM_BOUNDS.maxY) * (1 - pinnedBias * 0.3)
+    + pinnedBias * 0.22;
+
+  // 频率取得很低：深海生物的巡游是「漂」而不是「游」
+  const w1 = pick(id, 3, 0.055, 0.110);
+  const w2 = pick(id, 4, 0.021, 0.047);
+  const w3 = pick(id, 5, 0.038, 0.082);
+
+  const wander = pick(id, 6, 0.05, 0.16) * (1 - pinnedBias * 0.45);
+
+  // 亮度：休眠的标签页非常暗，出声的明显更亮
+  let energy = 1;
+  if (input.discarded) energy = 0.22;
+  else if (!input.active && hash01(id, 77) < 0.35) energy = 0.62; // 后台标签页有些偏暗
+  if (input.audible) energy = 1.55;
+
+  return {
+    id,
+    tabId: input.tabId,
+    shape,
+    homeX,
+    homeY,
+    w1,
+    w2,
+    w3,
+    p1: pick(id, 11, 0, Math.PI * 2),
+    p2: pick(id, 12, 0, Math.PI * 2),
+    p3: pick(id, 13, 0, Math.PI * 2),
+    wander,
+    speed: pick(id, 14, 0.75, 1.35),
+    scale: pick(id, 15, 0.85, 1.15) * (1 + pinnedBias * 0.45),
+    energy,
+    // 大约每 7 只里有 1 只带点缀色
+    alt: hash01(id, 21) < 0.14,
+    fade: 0,
+    title: input.title,
+    pinned: input.pinned,
+    audible: input.audible,
+    discarded: input.discarded,
+    active: input.active,
+  };
+}
+
+/** 位置与朝向。纯函数 —— 同样的 (creature, t) 永远得到同样的结果。 */
+export interface Pose2D {
+  x: number;
+  y: number;
+  /** 单位朝向 */
+  dx: number;
+  dy: number;
+}
+
+/**
+ * 求一只生物在 t 时刻的位置与朝向。
+ *
+ * 两条横向波 + 一条纵向波。三个频率刻意取互不通约的值（不是整数倍），
+ * 否则路径会很快走成一个闭合的环，一眼就看出来是循环的。
+ *
+ * 朝向由**有限差分**求，而不是解析求导 —— 差分天然和位置一致，
+ * 而且以后改路径公式时不会忘记同步改朝向。
+ */
+export function poseAt(c: Creature, t: number, out: Pose2D): Pose2D {
+  const s = t * c.speed;
+  const step = 0.35;
+
+  const posX = (tt: number): number =>
+    c.homeX + c.wander * (Math.sin(tt * c.w1 + c.p1) * 0.68 + Math.sin(tt * c.w2 + c.p2) * 0.32);
+  const posY = (tt: number): number =>
+    c.homeY + c.wander * 0.62 * Math.sin(tt * c.w3 + c.p3);
+
+  out.x = posX(s);
+  out.y = posY(s);
+
+  const nx = posX(s + step);
+  const ny = posY(s + step);
+  let dx = nx - out.x;
+  let dy = ny - out.y;
+  const len = Math.sqrt(dx * dx + dy * dy);
+  if (len > 1e-7) {
+    dx /= len;
+    dy /= len;
+  } else {
+    dx = 1;
+    dy = 0;
+  }
+  out.dx = dx;
+  out.dy = dy;
+  return out;
+}

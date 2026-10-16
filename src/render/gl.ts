@@ -472,10 +472,16 @@ export class DynamicMesh {
     gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, indices, 0, iCount);
   }
 
-  draw(indexCount = this.indexCount): void {
+  /**
+   * 画一段索引。
+   *
+   * `indexOffset` 让一个网格里可以放**多段用途不同的几何** ——
+   * 生物用的就是这条：身体在前、光晕环在后，两个 pass 各画各的那一段。
+   */
+  draw(indexCount = this.indexCount, indexOffset = 0): void {
     const gl = this.gl;
     gl.bindVertexArray(this.vao);
-    gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0);
+    gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, indexOffset * 2);
   }
 
   dispose(): void {
