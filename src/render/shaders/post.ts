@@ -124,6 +124,19 @@ void main() {
   // 幅度取 1/255 量级 —— 足够打散量化误差，又完全看不见噪点。
   float dither = (hash21(gl_FragCoord.xy + fract(uTime) * 137.0) - 0.5) / 255.0;
 
-  fragColor = vec4(col + dither, uOpacity * inside);
+  float alpha = uOpacity * inside;
+
+  // ⚠️ 必须**预乘**。
+  //
+  // 画布是用 premultipliedAlpha: true 建的，浏览器会按
+  //     result = canvas.rgb + page.rgb * (1 - canvas.a)
+  // 合成。如果这里写 vec4(col, alpha)（非预乘），实际效果就变成
+  //     result = col + page.rgb * (1 - alpha)
+  // —— 也就是**加法**：生物的辉光会直接加到网页上，把页面提亮。
+  // 这正好是覆盖层最不该做的事。
+  //
+  // 写成 vec4(col * alpha, alpha) 才是标准的 source-over：
+  // 网页只会被压暗，不会被提亮。
+  fragColor = vec4((col + dither) * alpha, alpha);
 }
 `;

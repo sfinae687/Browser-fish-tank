@@ -82,6 +82,10 @@ export interface TankFrame {
   /** 辉光强度倍率 */
   bloom: number;
   creatures: readonly Creature[];
+  /** 生物尺寸倍率 */
+  creatureScale: number;
+  /** 可选远景 */
+  backdrop?: string;
 }
 
 /**
@@ -267,6 +271,7 @@ export class TankRenderer {
         time: frame.time,
         intro: frame.intro,
         opacity: 1,
+        creatureScale: frame.creatureScale,
       });
       gl.disable(gl.BLEND);
     }

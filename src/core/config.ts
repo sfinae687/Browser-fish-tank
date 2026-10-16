@@ -32,6 +32,23 @@ export type Framing = 'fill' | 'center' | 'letterbox';
 
 export type AnchorY = 'top' | 'center' | 'bottom';
 
+/**
+ * 远景。
+ *
+ * 水体本身只有一个渐变，看久了会觉得「空」或者「平」。
+ * 远景给画面一个**纵深参照物**，而且换一个就换一种气氛 ——
+ * 这是性价比最高的一种「多变」。
+ */
+export type Backdrop = 'open' | 'trench' | 'snowfield' | 'vent' | 'ruins';
+
+export const BACKDROP_LABELS: Record<Backdrop, string> = {
+  open: '开阔水域 · 什么都没有，最安静',
+  trench: '海沟 · 远处一道黑压压的崖壁',
+  snowfield: '沉降雪原 · 密集的有机碎屑缓缓落下',
+  vent: '热泉喷口 · 远处几缕上升的黑烟',
+  ruins: '遗迹 · 远处倾颓的柱状轮廓',
+};
+
 export interface LayerToggles {
   /** 水面那条很淡的线 */
   surface: boolean;
@@ -65,6 +82,16 @@ export interface SurfaceConfig {
   bloom: number;
   /** 同时最多显示多少只生物 */
   maxCreatures: number;
+  /**
+   * 生物尺寸倍率。
+   *
+   * 深海里的生物应该是**画面里的点缀**，不是主体。给大了会有压迫感，
+   * 在覆盖层上尤其明显 —— 那是盖在别人网页上的东西，
+   * 尺寸稍大一点就变成干扰。
+   */
+  creatureScale: number;
+  /** 远景 */
+  backdrop: Backdrop;
   layers: LayerToggles;
 
   // ——— 浏览器特色 ———
@@ -109,10 +136,15 @@ export const NEWTAB_DEFAULTS: SurfaceConfig = {
   zoom: 1,
   anchorY: 'center',
   theme: 'abyss',
-  quality: 'auto',
+  // 默认就给高画质。这个场景的观感极度依赖细碎的辉光与微粒，
+  // 省下来的那点帧率不值得让第一印象变差；真跑不动的机器
+  // 会因为检测到软件光栅化而自动降档。
+  quality: 'high',
   fpsCap: 30,
   bloom: 1,
   maxCreatures: 18,
+  creatureScale: 0.62,
+  backdrop: 'open',
   layers: { ...LAYERS_DEFAULT },
   clickToSwitch: true,
   hoverTitles: true,
@@ -127,16 +159,24 @@ export const NEWTAB_DEFAULTS: SurfaceConfig = {
  */
 export const OVERLAY_DEFAULTS: SurfaceConfig = {
   enabled: false,
-  opacity: 0.55,
+  opacity: 0.5,
   framing: 'center',
   zoom: 0.85,
   anchorY: 'bottom',
   theme: 'abyss',
-  quality: 'low',
+  quality: 'medium',
   fpsCap: 24,
-  bloom: 0.8,
+  // ⚠️ 覆盖层的辉光**恒为 0**，而且不提供开关。
+  //
+  // 辉光的本质是「往画面上加光」。盖在别人的网页上时，加光就是把正文
+  // 冲淡 —— 一个美化插件没有任何理由让人读不清字。
+  // 覆盖层只做一件事：**压暗**。见 §1.4。
+  bloom: 0,
   maxCreatures: 9,
-  layers: { ...LAYERS_DEFAULT, rays: false, vignette: false },
+  // 覆盖层上的生物要比新标签页更小 —— 它是客串
+  creatureScale: 0.42,
+  backdrop: 'open',
+  layers: { ...LAYERS_DEFAULT, rays: false, vignette: false, bloom: false },
   clickToSwitch: false,
   hoverTitles: false,
   demoMode: false,
@@ -149,7 +189,7 @@ export function defaultConfig(): Config {
       newtab: { ...NEWTAB_DEFAULTS, layers: { ...LAYERS_DEFAULT } },
       overlay: {
         ...OVERLAY_DEFAULTS,
-        layers: { ...LAYERS_DEFAULT, rays: false, vignette: false },
+        layers: { ...LAYERS_DEFAULT, rays: false, vignette: false, bloom: false },
       },
     },
   };
@@ -203,6 +243,12 @@ export function sanitizeSurface(raw: unknown, id: SurfaceId): SurfaceConfig {
     fpsCap: Math.round(num(r['fpsCap'], 5, 60, base.fpsCap)),
     bloom: num(r['bloom'], 0, 2.5, base.bloom),
     maxCreatures: Math.round(num(r['maxCreatures'], 1, 40, base.maxCreatures)),
+    creatureScale: num(r['creatureScale'], 0.25, 1.6, base.creatureScale),
+    backdrop: pick(
+      r['backdrop'],
+      ['open', 'trench', 'snowfield', 'vent', 'ruins'] as const,
+      base.backdrop,
+    ),
     layers: sanitizeLayers(r['layers'], base.layers),
     clickToSwitch: bool(r['clickToSwitch'], base.clickToSwitch),
     hoverTitles: bool(r['hoverTitles'], base.hoverTitles),
@@ -218,13 +264,16 @@ export function sanitizeSurface(raw: unknown, id: SurfaceId): SurfaceConfig {
 export function sanitizeConfig(raw: unknown): Config {
   const r = isObj(raw) ? raw : {};
   const surfaces = isObj(r['surfaces']) ? r['surfaces'] : {};
-  return {
-    version: CONFIG_VERSION,
-    surfaces: {
-      newtab: sanitizeSurface(surfaces['newtab'], 'newtab'),
-      overlay: sanitizeSurface(surfaces['overlay'], 'overlay'),
-    },
-  };
+  const newtab = sanitizeSurface(surfaces['newtab'], 'newtab');
+  const overlay = sanitizeSurface(surfaces['overlay'], 'overlay');
+
+  // 覆盖层的辉光永远是 0，而且直接从图层里摘掉。
+  // 这一条**不通过配置暴露** —— 见 OVERLAY_DEFAULTS 的说明：
+  // 往别人的网页上加光是没有正当理由的，所以不给这个旋钮。
+  overlay.bloom = 0;
+  overlay.layers = { ...overlay.layers, bloom: false };
+
+  return { version: CONFIG_VERSION, surfaces: { newtab, overlay } };
 }
 
 // ————————————————————————————————————————————————————————————
@@ -244,15 +293,18 @@ export interface ResolvedQuality {
  * `auto` 只依据「是不是软件光栅化」判断 —— 更聪明的做法（按实测帧时
  * 动态升降）曾经有，但那需要一套测量与迟滞逻辑，而收益在真实使用里
  * 很小：这台机器要么一直跑得动，要么一直跑不动。
+ *
+ * 注意这里**不看帧率上限**。帧率是「多久画一帧」，画质是「一帧画多细」，
+ * 两者没有关系 —— 把 fpsCap 当画质依据会让「设 30fps 省电」这种
+ * 完全合理的操作莫名其妙地降画质。
  */
-export function resolveQuality(
-  quality: Quality,
-  software: boolean,
-  fpsCap: number,
-): ResolvedQuality {
+export function resolveQuality(quality: Quality, software: boolean): ResolvedQuality {
   if (quality === 'auto') {
+    // 自动档只在「检测到软件光栅化」时降档。别的猜测（按核数、按内存）
+    // 都不如这一条准，而且猜错的方向总是「降得太狠」——
+    // 那会让第一印象变差，而用户不会知道是画质设置的问题。
     if (software) return { renderScale: 0.62, detail: 0 };
-    return fpsCap <= 30 ? { renderScale: 0.9, detail: 1 } : { renderScale: 1, detail: 2 };
+    return { renderScale: 1, detail: 2 };
   }
   if (quality === 'low') return { renderScale: 0.62, detail: 0 };
   if (quality === 'medium') return { renderScale: 0.85, detail: 1 };

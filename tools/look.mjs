@@ -37,6 +37,7 @@ function parseArgs(argv) {
     width: 1600,
     height: 900,
     bloom: true,
+    scale: 0.62,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -48,6 +49,7 @@ function parseArgs(argv) {
     else if (a.startsWith('--layers=')) out.layers = a.slice(9);
     else if (a.startsWith('--width=')) out.width = Number(a.slice(8));
     else if (a.startsWith('--height=')) out.height = Number(a.slice(9));
+    else if (a.startsWith('--scale=')) out.scale = Number(a.slice(8));
     else if (a === '--nobloom') out.bloom = false;
     else if (a === '--help') {
       console.log(await0());
@@ -78,6 +80,7 @@ import { Flock } from './src/core/creatures.js';
 import { createTabSource } from './src/core/tabs.js';
 import { paletteFor } from './src/core/theme.js';
 
+const SCALE = ${args.scale};
 const THEME = ${JSON.stringify(args.theme)};
 const TIME = ${args.time};
 const COUNT = ${args.n};
@@ -221,6 +224,7 @@ function frame() {
     time: TIME,
     intro: 1,
     opacity: 1,
+    creatureScale: SCALE,
   });
 
   bindTarget(gl, null, w, h);
@@ -246,6 +250,8 @@ function frame() {
         c.shape,
       ].join(' '),
     );
+    const school = creatures.map((c) => (c.schooling > 0 ? c.schoolId : '-')).join('');
+    console.log('[school] ' + school + '  （数字 = 群号，- = 独居）');
     console.log('[states]');
     for (const r of rows) console.log('  ' + r);
   }

@@ -93,15 +93,22 @@ const mkTab = (over = {}) => ({
 function testMesh(sim) {
   section('1. 形状与网格');
 
-  assertEq(sim.SHAPE_NAMES.length, 4, '有 4 个手写体型');
+  const fish = sim.SHAPE_NAMES.filter((n) => sim.SHAPES[n].kind === 'fish');
+  const jelly = sim.SHAPE_NAMES.filter((n) => sim.SHAPES[n].kind === 'jelly');
+  assertTrue(fish.length >= 4, `有 ${fish.length} 个手写鱼型`);
+  assertTrue(jelly.length >= 1, `有 ${jelly.length} 个水母型`, jelly.join(','));
 
   let allOk = true;
   const detail = [];
   for (const name of sim.SHAPE_NAMES) {
     const shape = sim.SHAPES[name];
     // 剖面必须非负 —— 半高跑到负数会让网格自交
-    let minH = Infinity;
-    for (let i = 0; i <= 40; i++) minH = Math.min(minH, sim.halfHeight(shape, i / 40));
+    // 水母不用剖面（它的伞是半圆，不是一条体高曲线）
+    let minH = 1;
+    if (shape.kind === 'fish') {
+      minH = Infinity;
+      for (let i = 0; i <= 40; i++) minH = Math.min(minH, sim.halfHeight(shape, i / 40));
+    }
     const data = sim.buildCreatureMesh(shape);
     const vCount = data.vertices.length / 8;
     const iCount = data.bodyIndexCount + data.haloIndexCount;
@@ -115,12 +122,16 @@ function testMesh(sim) {
 
   // 体高不能超过体长的一半 —— 这就是上一版「一缸圆球」的成因
   const fat = [];
-  for (const name of sim.SHAPE_NAMES) {
+  const thin = [];
+  for (const name of fish) {
     const s = sim.SHAPES[name];
     const ratio = (s.height * 2) / s.length;
     if (ratio > 0.5) fat.push(`${s.label} ${ratio.toFixed(2)}`);
+    // 太细的鱼在近黑背景上会读成一根线而不是一条鱼
+    if (ratio < 0.14) thin.push(`${s.label} ${ratio.toFixed(3)}`);
   }
   assertTrue(fat.length === 0, '没有体型胖到失真（体高 < 体长的一半）', fat.join(' '));
+  assertTrue(thin.length === 0, '没有体型细到像一根线（体高 > 体长的 14%）', thin.join(' '));
 
   // 拓扑：片元必须有一个能变化的归一化半径，否则边缘光会糊满全身。
   // 这一条是从「两行顶点导致 aEdge 恒等于 1」那个 bug 来的。
@@ -195,6 +206,76 @@ function testIdentity(sim) {
   let same = true;
   for (const k of Object.keys(before)) if (c[k] !== before[k]) same = false;
   assertTrue(same, '状态反复变化之后，身份字段逐位不变（不然生物会「跳」一下）');
+}
+
+function testSchooling(sim) {
+  section('3.5 鱼群');
+
+  // 用足够多的 id 取样，看有多少只在成群
+  let schooling = 0;
+  const sample = 60;
+  const schools = new Map();
+  for (let i = 0; i < sample; i++) {
+    const c = sim.makeCreature({
+      id: 5000 + i * 31, tabId: 5000 + i * 31, title: '',
+      pinned: false, audible: false, discarded: false, active: false,
+    });
+    if (c.schooling > 0) {
+      schooling++;
+      schools.set(c.schoolId, (schools.get(c.schoolId) ?? 0) + 1);
+    }
+  }
+  const ratio = schooling / sample;
+  assertTrue(ratio > 0.3, `有成群的鱼（${(ratio * 100).toFixed(0)}%）`);
+  assertTrue(schools.size >= 1, `分成了 ${schools.size} 个群`, [...schools.entries()].join(' '));
+
+  // 同一个群里的鱼必须真的挨得近 —— 否则「群」只是个编号
+  const t = 33.3;
+  const pose = { x: 0, y: 0, dx: 0, dy: 0 };
+  const bySchool = new Map();
+  for (let i = 0; i < sample; i++) {
+    const c = sim.makeCreature({
+      id: 5000 + i * 31, tabId: 5000 + i * 31, title: '',
+      pinned: false, audible: false, discarded: false, active: false,
+    });
+    if (c.schooling <= 0) continue;
+    sim.poseAt(c, t, pose);
+    const list = bySchool.get(c.schoolId) ?? [];
+    list.push({ x: pose.x, y: pose.y, dx: pose.dx, dy: pose.dy });
+    bySchool.set(c.schoolId, list);
+  }
+
+  let maxSpread = 0;
+  let maxHeadingDiff = 0;
+  for (const list of bySchool.values()) {
+    if (list.length < 2) continue;
+    let cx = 0;
+    let cy = 0;
+    for (const p of list) { cx += p.x; cy += p.y; }
+    cx /= list.length;
+    cy /= list.length;
+    for (const p of list) maxSpread = Math.max(maxSpread, Math.hypot(p.x - cx, p.y - cy));
+    // 朝向差：同群的鱼应当基本朝同一个方向
+    for (const p of list) {
+      const diff = Math.acos(Math.min(1, Math.max(-1, p.dx * list[0].dx + p.dy * list[0].dy)));
+      maxHeadingDiff = Math.max(maxHeadingDiff, diff);
+    }
+  }
+  assertTrue(maxSpread < 0.12, '同一群的鱼聚在一起（离群心不超过 0.12 缸宽）', maxSpread.toFixed(4));
+  assertTrue(
+    maxHeadingDiff < 1.1,
+    '同一群的鱼朝向大体一致（这是「群」读得出来的关键）',
+    `${((maxHeadingDiff * 180) / Math.PI).toFixed(0)}°`,
+  );
+
+  // 独居的鱼不受群心影响
+  const lone = sim.makeCreature({
+    id: 99, tabId: 99, title: '', pinned: false, audible: false, discarded: false, active: false,
+  });
+  lone.schooling = 0;
+  const a1 = sim.poseAt(lone, 5, { x: 0, y: 0, dx: 0, dy: 0 });
+  const a2 = sim.poseAt(lone, 5, { x: 0, y: 0, dx: 0, dy: 0 });
+  assertEq(a1.x, a2.x, '独居的鱼仍然是纯函数');
 }
 
 function testMotion(sim) {
@@ -342,6 +423,7 @@ async function main() {
     testMesh(mod);
     testIdentity(mod);
     testMotion(mod);
+    testSchooling(mod);
     testFlock(mod);
     testTheme(mod);
     await testShaderTemplates();

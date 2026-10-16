@@ -34,9 +34,24 @@ export const CREATURE_VERTEX_LAYOUT = [
   { name: 'aBody', size: 2 },
   { name: 'aFlags', size: 2 },
   { name: 'aEdge', size: 1 },
+  { name: 'aKind', size: 1 },
 ] as const;
 
-export const CREATURE_FLOATS_PER_VERTEX = 8;
+export const CREATURE_FLOATS_PER_VERTEX = 9;
+
+/**
+ * 部件类型。着色器据此决定这个顶点该怎么动。
+ *
+ * 0        普通（鱼的鳍、身体）
+ * 1        水母的钟体 —— 跟着搏动缩放
+ * 2 及以上 水母的触手 —— 相位是 kind - 2，越靠末端摆得越大
+ */
+export const KIND_NORMAL = 0;
+export const KIND_BELL = 1;
+export const KIND_TENTACLE_BASE = 2;
+
+/** 加上「离体轴多远」的说明 */
+
 
 export const MAX_SPINE_POINTS = 24;
 
@@ -64,11 +79,20 @@ const HALO_RINGS = [1.0, 1.22, 1.52, 1.95, 2.6] as const;
 /** 剖面控制点：[沿体长 0..1, 半高倍率 0..1] */
 type ProfilePoint = readonly [number, number];
 
-export type ShapeName = 'lantern' | 'angler' | 'hatchet' | 'ribbon';
+export type ShapeName =
+  | 'lantern'
+  | 'angler'
+  | 'hatchet'
+  | 'ribbon'
+  | 'moonjelly'
+  | 'lighthouse';
+
+export type CreatureKind = 'fish' | 'jelly';
 
 export interface CreatureShape {
   name: ShapeName;
   label: string;
+  kind: CreatureKind;
   /** 体长（缸内 uv） */
   length: number;
   /**
@@ -93,8 +117,15 @@ export interface CreatureShape {
   dorsalStart: number;
   /** 胸鳍大小（相对体高） */
   pectoral: number;
-  /** 沿腹部排几个发光器 */
+  /** 沿腹部排几个发光器（鱼） */
   photophores: number;
+
+  // ——— 仅水母 ———
+  /** 触手条数 */
+  tentacles?: number;
+  /** 钟体分成几圈，越多越圆滑 */
+  bellRings?: number;
+
   /** 体型权重：越大越常见 */
   weight: number;
 }
@@ -114,9 +145,10 @@ export const SHAPES: Record<ShapeName, CreatureShape> = {
   // 灯笼鱼：细长的鱼雷形，最宽处在 30% 左右。深海最常见的小型发光鱼。
   lantern: {
     name: 'lantern',
+    kind: 'fish',
     label: '灯笼鱼',
-    length: 0.115,
-    height: 0.0135,
+    length: 0.112,
+    height: 0.0158,
     profile: [
       [0.0, 0.30], [0.07, 0.74], [0.17, 0.95], [0.30, 1.0],
       [0.48, 0.90], [0.66, 0.68], [0.84, 0.48], [1.0, 0.31],
@@ -128,12 +160,13 @@ export const SHAPES: Record<ShapeName, CreatureShape> = {
     dorsalStart: 0.36,
     pectoral: 0.45,
     photophores: 7,
-    weight: 1.0,
+    weight: 1.35,
   },
 
   // 鮟鱇：圆胖、头大、尾细。
   angler: {
     name: 'angler',
+    kind: 'fish',
     label: '鮟鱇',
     length: 0.150,
     height: 0.028,
@@ -154,6 +187,7 @@ export const SHAPES: Record<ShapeName, CreatureShape> = {
   // 斧头鱼：短、极高，侧面看像一把斧头。轮廓极其独特。
   hatchet: {
     name: 'hatchet',
+    kind: 'fish',
     label: '斧头鱼',
     length: 0.080,
     height: 0.019,
@@ -168,15 +202,18 @@ export const SHAPES: Record<ShapeName, CreatureShape> = {
     dorsalStart: 0.30,
     pectoral: 0.75,
     photophores: 5,
-    weight: 0.6,
+    weight: 0.95,
   },
 
   // 带鱼：长条，体高几乎不变。游起来像一条飘动的光带。
   ribbon: {
     name: 'ribbon',
+    kind: 'fish',
     label: '深海带鱼',
-    length: 0.235,
-    height: 0.0105,
+    // ⚠️ 体高别给太小。11:1 的时候加上暗色身体，远看就是一根线 ——
+    // 「带鱼」和「一根草」的区别全在这个比例上。
+    length: 0.205,
+    height: 0.0165,
     profile: [
       [0.0, 0.36], [0.08, 0.76], [0.22, 0.90], [0.45, 0.94],
       [0.68, 0.88], [0.86, 0.76], [1.0, 0.52],
@@ -190,9 +227,52 @@ export const SHAPES: Record<ShapeName, CreatureShape> = {
     photophores: 11,
     weight: 0.45,
   },
+
+  // 海月水母：伞很扁、触手细而多。深海里的经典剪影。
+  moonjelly: {
+    name: 'moonjelly',
+    kind: 'jelly',
+    label: '海月水母',
+    // length 是「伞顶到触手末端」的总高；height 是伞高
+    length: 0.16,
+    height: 0.035,
+    profile: [], // 水母不用剖面
+    segments: 14,
+    tailSpan: 0,
+    tailFork: 0,
+    dorsal: 0,
+    dorsalStart: 0,
+    pectoral: 0,
+    photophores: 0,
+    tentacles: 9,
+    bellRings: 6,
+    weight: 0.75,
+  },
+
+  // 灯塔水母：伞更钟形、触手更少更粗。体型小、数量多。
+  lighthouse: {
+    name: 'lighthouse',
+    kind: 'jelly',
+    label: '灯塔水母',
+    length: 0.10,
+    height: 0.028,
+    profile: [],
+    segments: 10,
+    tailSpan: 0,
+    tailFork: 0,
+    dorsal: 0,
+    dorsalStart: 0,
+    pectoral: 0,
+    photophores: 0,
+    tentacles: 5,
+    bellRings: 5,
+    weight: 0.55,
+  },
 };
 
-export const SHAPE_NAMES: ShapeName[] = ['lantern', 'angler', 'hatchet', 'ribbon'];
+export const SHAPE_NAMES: ShapeName[] = [
+  'lantern', 'angler', 'hatchet', 'ribbon', 'moonjelly', 'lighthouse',
+];
 
 export interface CreatureMeshData {
   vertices: Float32Array;
@@ -223,6 +303,12 @@ export interface CreatureMeshData {
  */
 function makeProfileSampler(points: readonly ProfilePoint[]): (u: number) => number {
   const n = points.length;
+  // 空剖面（水母）直接返回 0，不要让下游去构造一个负数长度的数组
+  if (n === 0) return () => 0;
+  if (n === 1) {
+    const only = points[0] as ProfilePoint;
+    return () => only[1];
+  }
   const xs = new Float64Array(n);
   const ys = new Float64Array(n);
   for (let i = 0; i < n; i++) {
@@ -314,7 +400,165 @@ export function halfHeight(shape: CreatureShape, u: number): number {
 // 网格
 // ————————————————————————————————————————————————————————————
 
+/**
+ * 水母。
+ *
+ * 和鱼共用一套脊柱管线，但用法完全不同：
+ *
+ *   - 鱼的脊柱沿**身体**走，身体就是脊柱的粗细
+ *   - 水母的脊柱沿**伞顶到触手末端**走，伞是挂在脊柱顶端的一个钟，
+ *     触手是沿着脊柱垂下去的一束细带
+ *
+ * 所以水母不需要新的渲染路径，只需要新的网格 + 两个着色器分支
+ * （钟体跟着搏动缩放、触手末端摆得更大）。
+ */
+function buildJellyMesh(
+  shape: CreatureShape,
+  vertices: number[],
+  bodyIndices: number[],
+  haloIndices: number[],
+): void {
+  const segs = shape.segments;
+  const bellHeight = shape.height;
+  // 水母的伞是**宽大于高**的 —— 这是它和鱼最容易区分的轮廓特征
+  const bellRadius = shape.height * 1.45;
+  const rings = Math.max(3, shape.bellRings ?? 5);
+  const tentacleCount = Math.max(3, shape.tentacles ?? 8);
+
+  const push = (
+    spine: number,
+    lx: number,
+    ly: number,
+    bu: number,
+    bv: number,
+    isGlow: number,
+    glowAmt: number,
+    edge: number,
+    kind: number = KIND_NORMAL,
+  ): number => {
+    const i = vertices.length / CREATURE_FLOATS_PER_VERTEX;
+    vertices.push(spine, lx, ly, bu, bv, isGlow, glowAmt, edge, kind);
+    return i;
+  };
+
+  /** 钟体在 k 圈处的半径与沿轴深度。半圆剖面，顶端收成一点。 */
+  const bellAt = (k: number): { r: number; y: number } => {
+    const th = (k / rings) * (Math.PI / 2);
+    return { r: bellRadius * Math.sin(th), y: bellHeight * (1 - Math.cos(th)) };
+  };
+
+  // ——————— 触手（先画，被钟体压住）———————
+  {
+    const steps = Math.max(4, Math.floor(segs * 0.8));
+    const halfW = bellRadius * 0.055;
+    for (let j = 0; j < tentacleCount; j++) {
+      // 从伞缘均匀铺开，末端略微收拢（真实水母的触手是拖在后面的）
+      const spread = tentacleCount === 1 ? 0 : (j / (tentacleCount - 1)) * 2 - 1;
+      const base = vertices.length / CREATURE_FLOATS_PER_VERTEX;
+      for (let i = 0; i <= steps; i++) {
+        const s = i / steps;
+        const spine = 1 + s * (segs - 1);
+        const x = spread * bellRadius * (1 - s * 0.22);
+        // 越靠末端越细
+        const w = halfW * (1 - s * 0.55);
+        // 触手的相位随编号递增 —— 着色器据此让它们各自摆动，而不是整束一起动
+        const kind = KIND_TENTACLE_BASE + j;
+        push(spine, x + w, 0, s, 1, 0, 0.45, 0.6, kind);
+        push(spine, x - w, 0, s, -1, 0, 0.45, 0.6, kind);
+      }
+      for (let i = 0; i < steps; i++) {
+        const a = base + i * 2;
+        const b = a + 2;
+        bodyIndices.push(a, b, a + 1, a + 1, b, b + 1);
+      }
+    }
+  }
+
+  // ——————— 钟体 ———————
+  {
+    const base = vertices.length / CREATURE_FLOATS_PER_VERTEX;
+    for (let k = 0; k <= rings; k++) {
+      const { r, y } = bellAt(k);
+      const u = k / rings;
+      // 伞缘最亮：真实的发光水母发光器就长在伞缘
+      const edge = 0.5 + 0.5 * u;
+      push(0, r, y, u, 1, 0, 0.3, edge, KIND_BELL);
+      push(0, -r, y, u, -1, 0, 0.3, edge, KIND_BELL);
+    }
+    for (let k = 0; k < rings; k++) {
+      const a = base + k * 2;
+      const b = a + 2;
+      bodyIndices.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+  }
+
+  // ——————— 伞缘的发光点 ———————
+  {
+    const n = Math.max(5, Math.round(tentacleCount * 0.8));
+    const r = bellRadius * 0.10;
+    const rim = bellAt(rings);
+    for (let j = 0; j < n; j++) {
+      const x = (n === 1 ? 0 : (j / (n - 1)) * 2 - 1) * bellRadius * 0.92;
+      const base = vertices.length / CREATURE_FLOATS_PER_VERTEX;
+      const bell = Math.sin((Math.PI * (j + 0.5)) / n);
+      const amt = 0.5 + bell * 0.5;
+      push(0, x, rim.y - r, 1, 0, 1, amt, 0, KIND_BELL);
+      push(0, x + r, rim.y, 1, 0, 1, amt, 0, KIND_BELL);
+      push(0, x, rim.y + r, 1, 0, 1, amt, 0, KIND_BELL);
+      push(0, x - r, rim.y, 1, 0, 1, amt, 0, KIND_BELL);
+      bodyIndices.push(base, base + 1, base + 2, base, base + 2, base + 3);
+    }
+  }
+
+  // ——————— 光晕环（绕钟体）———————
+  {
+    const base = vertices.length / CREATURE_FLOATS_PER_VERTEX;
+    for (const R of HALO_RINGS) {
+      for (let k = 0; k <= rings; k++) {
+        const { r, y } = bellAt(k);
+        const u = k / rings;
+        push(0, r * R, y * R, u, 1, 0, 0, R, KIND_BELL);
+        push(0, -r * R, y * R, u, -1, 0, 0, R, KIND_BELL);
+      }
+    }
+    for (let ri = 0; ri < HALO_RINGS.length - 1; ri++) {
+      for (let k = 0; k < rings; k++) {
+        const a = base + (ri * (rings + 1) + k) * 2;
+        const b = a + 2;
+        const c = a + (rings + 1) * 2;
+        const d = c + 2;
+        haloIndices.push(a, c, a + 1, a + 1, c, c + 1);
+        haloIndices.push(a + 1, c + 1, b, b, c + 1, d + 1);
+      }
+    }
+  }
+}
+
 export function buildCreatureMesh(shape: CreatureShape): CreatureMeshData {
+  if (shape.kind === 'jelly') {
+    const vertices: number[] = [];
+    const bodyIndices: number[] = [];
+    const haloIndices: number[] = [];
+    buildJellyMesh(shape, vertices, bodyIndices, haloIndices);
+    const vertexCount = vertices.length / CREATURE_FLOATS_PER_VERTEX;
+    const bodyIndexCount = bodyIndices.length;
+    const totalIndices = bodyIndexCount + haloIndices.length;
+    if (vertexCount > MAX_CREATURE_VERTICES || totalIndices > MAX_CREATURE_INDICES) {
+      console.error(
+        `[深海] 体型 ${shape.name} 超出网格容量：` +
+          `${vertexCount}/${MAX_CREATURE_VERTICES} 顶点，` +
+          `${totalIndices}/${MAX_CREATURE_INDICES} 索引`,
+      );
+    }
+    return {
+      vertices: new Float32Array(vertices),
+      indices: new Uint16Array([...bodyIndices, ...haloIndices]),
+      vertexCount: Math.min(vertexCount, MAX_CREATURE_VERTICES),
+      bodyIndexCount: Math.min(bodyIndexCount, MAX_CREATURE_INDICES),
+      haloIndexCount: Math.min(haloIndices.length, MAX_CREATURE_INDICES),
+    };
+  }
+
   const vertices: number[] = [];
   const bodyIndices: number[] = [];
   const haloIndices: number[] = [];
@@ -331,9 +575,10 @@ export function buildCreatureMesh(shape: CreatureShape): CreatureMeshData {
     isGlow: number,
     glowAmt: number,
     edge: number,
+    kind: number = KIND_NORMAL,
   ): number => {
     const i = vertices.length / CREATURE_FLOATS_PER_VERTEX;
-    vertices.push(spine, lx, ly, bu, bv, isGlow, glowAmt, edge);
+    vertices.push(spine, lx, ly, bu, bv, isGlow, glowAmt, edge, kind);
     return i;
   };
 

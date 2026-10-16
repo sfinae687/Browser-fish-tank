@@ -340,7 +340,7 @@ export class AquariumRunner {
       this.hovered = null;
     }
 
-    const quality = resolveQuality(conf.quality, renderer.info.software, conf.fpsCap);
+    const quality = resolveQuality(conf.quality, renderer.info.software);
     renderer.resizeToDisplay(quality.renderScale);
 
     const intro = Math.min(1, (performance.now() - this.startedAt) / (INTRO_SECONDS * 1000));
@@ -357,6 +357,8 @@ export class AquariumRunner {
       opacity: conf.opacity,
       bloom: conf.bloom,
       creatures: this.flock?.list ?? [],
+      creatureScale: conf.creatureScale,
+      backdrop: conf.backdrop,
     };
 
     renderer.render(frame);
@@ -424,7 +426,7 @@ export class AquariumRunner {
       quality: conf?.quality ?? 'auto',
       renderScale:
         conf && this.renderer
-          ? resolveQuality(conf.quality, this.renderer.info.software, conf.fpsCap).renderScale
+          ? resolveQuality(conf.quality, this.renderer.info.software).renderScale
           : 1,
       software: this.renderer?.info.software ?? false,
       paused: this.paused,

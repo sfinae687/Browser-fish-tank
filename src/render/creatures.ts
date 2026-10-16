@@ -45,6 +45,8 @@ export interface CreatureFrameParams {
   /** 开场进度 0..1 */
   intro: number;
   opacity: number;
+  /** 全局尺寸倍率 */
+  creatureScale: number;
 }
 
 export class CreatureRenderer {
@@ -65,6 +67,14 @@ export class CreatureRenderer {
    * 一致，所以只能拿渲染真正用过的姿态，不能另算一遍。
    */
   private readonly lastPoses: Pose2D[] = [];
+  /**
+   * 这一帧的尺寸倍率。
+   *
+   * ⚠️ 它必须**同时**作用在两处：顶点着色器里的 `aLocal`（身体的粗细）
+   * 和 CPU 上算出的脊柱长度。只做前者的话，生物会被拉成一根针 ——
+   * 高度缩了、长度没缩。第一版就是这个 bug，鱼看起来像草叶。
+   */
+  private currentScale = 1;
 
   constructor(gl: GL) {
     this.gl = gl;
@@ -110,6 +120,7 @@ export class CreatureRenderer {
 
     this.stats.creatures = list.length;
     this.stats.draws = 0;
+    this.currentScale = p.creatureScale;
 
     // 准备一遍：把每只生物的姿态算好，避免两个 pass 各算一次
     const poses: Pose2D[] = this.lastPoses;
@@ -185,6 +196,23 @@ export class CreatureRenderer {
     const strength = c.energy * pulse * intro * c.fade;
 
     prog.vec3('uGlow', base[0], base[1], base[2]);
+    // 背脊高光用的是**从上方来的水光**，不是生物自己的颜色 ——
+    // 这两个分开画面才有「被照亮的形体」而不是一块平面贴纸
+    prog.vec3a('uLight', p.palette.light);
+    prog.float('uSize', p.creatureScale);
+    prog.float('uSway', 0.006 * c.scale);
+
+    // 水母的搏动。收缩快、舒张慢 —— 对称的正弦看起来像在抖，不像在游。
+    const shape = SHAPES[c.shape];
+    if (shape.kind === 'jelly') {
+      const ph = p.time * (0.55 + c.speed * 0.35) + c.p1;
+      const raw = Math.sin(ph);
+      // 把正弦整形成「快收慢放」
+      const pulse = raw > 0 ? raw * raw * raw : 0;
+      prog.float('uPulse', pulse);
+    } else {
+      prog.float('uPulse', 0);
+    }
 
     if (halo) {
       // 光晕刻意做得很淡：它是「溢出」而不是「描边」。
@@ -216,9 +244,43 @@ export class CreatureRenderer {
   private buildSpine(c: Creature, pose: Pose2D, time: number): number {
     const shape = SHAPES[c.shape];
     const segs = shape.segments;
+    // 和顶点着色器里的 uSize 是同一个倍率 —— 两边必须一致
+    const bodyLen = shape.length * c.scale * this.currentScale;
 
+    // ——————— 水母 ———————
+    //
+    // 水母的脊柱是**竖直**的：钟体永远在上，触手垂下。
+    // 它不像鱼那样朝着运动方向 —— 水母是「伞在上、身体在下」地升降，
+    // 水平漂移只是顺带。用鱼的朝向画水母会让它侧躺着，一眼就假。
+    //
+    // 沿脊柱还叠一个搏动的窜升：收缩时向上冲一下，舒张时缓缓下沉。
+    if (shape.kind === 'jelly') {
+      const ph = time * (0.55 + c.speed * 0.35) + c.p1;
+      const contract = Math.max(0, Math.sin(ph));
+      const rise = -contract * bodyLen * 0.10;
+      // 极缓慢的左右摇摆，像被水推着
+      const sway = Math.sin(time * 0.21 + c.p2) * bodyLen * 0.06;
+
+      const cx = pose.x + sway;
+      const cy = pose.y + rise;
+      const dx = 0;
+      const dy = -1; // 朝上
+      const nx = 1; // 法向（水平）
+      const ny = 0;
+
+      const amp = bodyLen * 0.035;
+      for (let i = 0; i <= segs; i++) {
+        const t = segs > 0 ? i / segs : 0;
+        const along = bodyLen * (0.44 - t * 0.92);
+        const wave = Math.sin(time * 0.9 - t * 2.2 + c.p1) * amp * t;
+        this.spine[i * 2] = cx + dx * along + nx * wave;
+        this.spine[i * 2 + 1] = cy + dy * along + ny * wave;
+      }
+      return segs;
+    }
+
+    // ——————— 鱼 ———————
     // 摆尾的振幅和频率都跟着体型走：带鱼摆得又慢又大，灯笼鱼又快又小
-    const bodyLen = shape.length * c.scale;
     const amp = bodyLen * (c.shape === 'ribbon' ? 0.16 : 0.085);
     const beat = time * BEAT_RATE * c.speed * (c.shape === 'ribbon' ? 0.75 : 1.15);
 

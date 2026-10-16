@@ -226,7 +226,7 @@ class Preview {
     this.flock.setMax(this.conf.maxCreatures);
     this.flock.sync(this.tabs, dt);
 
-    const quality = resolveQuality(this.conf.quality, renderer.info.software, 30);
+    const quality = resolveQuality(this.conf.quality, renderer.info.software);
     renderer.resizeToDisplay(quality.renderScale);
 
     // 发布和运行器同名的诊断对象 —— 验收脚本对所有页面用同一个就绪判据，
@@ -256,6 +256,8 @@ class Preview {
       opacity: this.conf.opacity,
       bloom: this.conf.bloom,
       creatures: this.conf.layers.creatures ? this.flock.list : [],
+      creatureScale: this.conf.creatureScale,
+      backdrop: this.conf.backdrop,
     });
   };
 

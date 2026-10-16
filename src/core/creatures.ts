@@ -73,6 +73,15 @@ export interface Creature {
   energy: number;
   /** 是否用点缀色 */
   alt: boolean;
+  /**
+   * 成群程度。0 = 独居，> 0 = 属于某个群。
+   *
+   * 它只影响**运动**，不影响外观 —— 同一个体型可能这一缸里成群、
+   * 换一缸就独居，那会让人认不出是同一只。
+   */
+  schooling: number;
+  /** 所属鱼群的编号。只有 schooling > 0 时有意义。 */
+  schoolId: number;
   /** 0..1 的显隐。新开/关闭标签页时渐入渐出。 */
   fade: number;
 
@@ -197,6 +206,9 @@ export function makeCreature(input: CreatureSeedInput): Creature {
     scale: pick(id, 15, 0.85, 1.15) * (1 + pinnedBias * 0.45), // 创建时先给一个值
     // 大约每 7 只里有 1 只带点缀色
     alt: hash01(id, 21) < 0.14,
+    // 只有小型细长的种类成群；水母和鮟鱇独居
+    schooling: SHAPES[shape].kind === 'fish' && SCHOOLING_SHAPES.has(shape) ? 1 : 0,
+    schoolId: Math.floor(hash01(id, 907) * SCHOOL_COUNT) % SCHOOL_COUNT,
 
     // ——— 以下是「状态」，每次同步都重算 ———
     energy,
@@ -234,6 +246,54 @@ export function applyTabState(c: Creature, tab: TabInfo): void {
   c.energy = energy;
 }
 
+// ————————————————————————————————————————————————————————————
+// 鱼群
+// ————————————————————————————————————————————————————————————
+
+/**
+ * 会成群的体型。
+ *
+ * 哪些鱼成群是有讲究的：小型、细长的种类（灯笼鱼、斧头鱼、带鱼）
+ * 在真实海里就是成群活动的，而鮟鱇和水母独居。**给所有生物都加上成群
+ * 反而会失去「一群小鱼掠过」这个画面上最有效的对比。**
+ *
+ * ⚠️ 但**群的规模**比「有没有群」更重要。第一版只有 4/18 只在成群、
+ * 分到两个群里每群两只 —— 那看起来只是碰巧挨在一起，不是一群鱼。
+ * 要让「成群」读得出来，每群至少要有五六只。
+ */
+const SCHOOLING_SHAPES: ReadonlySet<string> = new Set(['lantern', 'hatchet', 'ribbon']);
+
+/** 一缸里分成几个群。太多了看不出「群」，太少了满屏都是一坨。 */
+const SCHOOL_COUNT = 2;
+
+/**
+ * 一个鱼群的**共享吸引子**。
+ *
+ * 这是「成群感」的全部来源：同一个群里的每只生物都围绕这个点在动，
+ * 而这个点自己按一条缓慢的路径游过整缸。
+ *
+ * 关键在于它是**时间的纯函数** —— 不需要任何个体状态、不需要邻居查询、
+ * 不需要积分。位置仍然是 `f(id, t)`，于是两个表面各算各的也必然一致。
+ * 真正的 boids 需要每只记住自己的速度，那是这一版刻意避开的东西。
+ */
+function schoolCenter(schoolId: number, t: number): { x: number; y: number } {
+  const a = hash01(schoolId, 811);
+  const b = hash01(schoolId, 823);
+  const c = hash01(schoolId, 829);
+
+  // 每个群一片自己的巡游区域，尽量摊开、不要重叠
+  const cx = 0.16 + a * 0.68;
+  const cy = 0.26 + b * 0.38;
+  const wx = 0.055 + c * 0.045;
+
+  // 频率取互不通约的值，免得走出一个看得出循环的闭合路径
+  // 群心要走得远一点，这样才看得出「一群鱼游过整缸」，
+  // 而不是「几只鱼在原地打转」
+  const x = cx + Math.sin(t * 0.043 + a * 6.28) * wx * 1.6 + Math.sin(t * 0.017 + b * 6.28) * wx;
+  const y = cy + Math.sin(t * 0.029 + c * 6.28) * 0.075;
+  return { x, y };
+}
+
 /** 位置与朝向。纯函数 —— 同样的 (creature, t) 永远得到同样的结果。 */
 export interface Pose2D {
   x: number;
@@ -255,6 +315,51 @@ export interface Pose2D {
 export function poseAt(c: Creature, t: number, out: Pose2D): Pose2D {
   const s = t * c.speed;
   const step = 0.35;
+
+  // ——————— 成群 ———————
+  //
+  // 群心 + 有相位差的环绕 + 一点个体抖动。
+  // 朝向取**群心的运动方向**，而不是个体自身路径的方向 ——
+  // 「所有鱼朝着同一个方向」是成群感里最关键的一条，
+  // 少了它，一群鱼看起来只是碰巧挨在一起的散兵游勇。
+  if (c.schooling > 0) {
+    // ⚠️ 群心必须用**共享时间** t，不能用各自的 s = t * c.speed。
+    //
+    // 用各自的速度意味着每条鱼在追群心轨迹上的**不同位置** ——
+    // 于是同一个群里会出现朝向差 88° 的情况，看起来根本不像一群鱼。
+    // 速度差异只能作用在个体的环绕相位上，不能作用在群心上。
+    const centre = schoolCenter(c.schoolId, t);
+    const ang = c.p1 + s * (0.42 + c.w1 * 1.8);
+    // 环绕半径决定这一群鱼是「一群」还是「一坨」。
+    // 给大了散成散兵游勇，给小了糊成一团 —— 0.5 倍游荡幅度附近最像样。
+    // 个体之间靠 c.wander 天然有差异，所以不会排成一个规则的圆。
+    const rad = c.wander * 0.55;
+
+    out.x = centre.x + Math.cos(ang) * rad + Math.sin(s * c.w2 * 2.4 + c.p2) * 0.010;
+    out.y = centre.y + Math.sin(ang) * rad * 0.52 + Math.sin(s * c.w3 * 1.9 + c.p3) * 0.009;
+
+    // 朝向：群心的运动方向 + 每条自己的小幅摆动（游动时身体本来就会偏）
+    const ahead = schoolCenter(c.schoolId, t + step);
+    let dx = ahead.x - centre.x;
+    let dy = ahead.y - centre.y;
+    const wob = Math.sin(s * 0.9 + c.p2) * 0.22;
+    const cosW = Math.cos(wob);
+    const sinW = Math.sin(wob);
+    const rx = dx * cosW - dy * sinW;
+    const ry = dx * sinW + dy * cosW;
+    dx = rx;
+    dy = ry;
+
+    const len = Math.sqrt(dx * dx + dy * dy);
+    if (len > 1e-7) {
+      out.dx = dx / len;
+      out.dy = dy / len;
+    } else {
+      out.dx = 1;
+      out.dy = 0;
+    }
+    return out;
+  }
 
   const posX = (tt: number): number =>
     c.homeX + c.wander * (Math.sin(tt * c.w1 + c.p1) * 0.68 + Math.sin(tt * c.w2 + c.p2) * 0.32);
