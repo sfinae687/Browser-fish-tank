@@ -82,6 +82,8 @@ export interface Creature {
   schooling: number;
   /** 所属鱼群的编号。只有 schooling > 0 时有意义。 */
   schoolId: number;
+  /** 游动姿态 */
+  gait: Gait;
   /** 0..1 的显隐。新开/关闭标签页时渐入渐出。 */
   fade: number;
 
@@ -180,7 +182,8 @@ export function makeCreature(input: CreatureSeedInput): Creature {
   const w2 = pick(id, 4, 0.021, 0.047);
   const w3 = pick(id, 5, 0.038, 0.082);
 
-  const wander = pick(id, 6, 0.05, 0.16) * (1 - pinnedBias * 0.45);
+  const gait = SHAPE_GAIT[shape] ?? 'cruise';
+  const wander = gaitWander(gait, pick(id, 6, 0.05, 0.16)) * (1 - pinnedBias * 0.45);
 
   // 亮度：休眠的标签页非常暗，出声的明显更亮
   let energy = 1;
@@ -209,6 +212,7 @@ export function makeCreature(input: CreatureSeedInput): Creature {
     // 只有小型细长的种类成群；水母和鮟鱇独居
     schooling: SHAPES[shape].kind === 'fish' && SCHOOLING_SHAPES.has(shape) ? 1 : 0,
     schoolId: Math.floor(hash01(id, 907) * SCHOOL_COUNT) % SCHOOL_COUNT,
+    gait: SHAPE_GAIT[shape] ?? 'cruise',
 
     // ——— 以下是「状态」，每次同步都重算 ———
     energy,
@@ -244,6 +248,77 @@ export function applyTabState(c: Creature, tab: TabInfo): void {
   else if (!tab.active && hash01(c.id, 77) < 0.35) energy = 0.62;
   if (tab.audible) energy = 1.55;
   c.energy = energy;
+}
+
+// ————————————————————————————————————————————————————————————
+// 游动姿态
+// ————————————————————————————————————————————————————————————
+
+/**
+ * 游动姿态。
+ *
+ * 四种「怎么游」，按体型分配。这是去掉「呆板」的关键一步 ——
+ * 之前所有生物共用同一套三正弦运动，只是参数不同，
+ * 于是整缸看起来像同一只生物被复制了很多份。
+ */
+export type Gait = 'drift' | 'cruise' | 'hover' | 'dart';
+
+/** 供界面显示。 */
+export const GAIT_LABELS: Record<Gait, string> = {
+  drift: '漂移',
+  cruise: '巡航',
+  hover: '悬停',
+  dart: '冲刺',
+};
+
+/**
+ * 体型 → 姿态。
+ *
+ * 依据是真实习性：灯笼鱼群游巡航，鮟鱇守株待兔（偶尔猛冲），
+ * 斧头鱼悬停不动，带鱼和水母随水漂。
+ */
+const SHAPE_GAIT: Record<string, Gait> = {
+  lantern: 'cruise',
+  angler: 'dart',
+  hatchet: 'hover',
+  ribbon: 'drift',
+  moonjelly: 'drift',
+  lighthouse: 'drift',
+};
+
+/**
+ * 把线性时间映射成「这个姿态眼里的时间」。
+ *
+ * `dart` 用的是**时间扭曲**而不是加速度状态：`s + a*sin(s*f)` 会让
+ * 路径上的行进速度周期性地忽快忽慢 —— 慢的时候像在悬停盯着猎物，
+ * 快的时候像猛冲一下。
+ *
+ * 这样做的好处是位置仍然是 `f(t)` 的纯函数，不需要「速度」这个状态。
+ * 真正的冲刺如果要做到「看到猎物才冲」，那必然要有状态和邻居查询，
+ * 而这一版刻意不要那些东西。
+ */
+function gaitTime(gait: Gait, s: number): number {
+  switch (gait) {
+    case 'drift':
+      // 随水漂：慢，而且几乎没有主动性
+      return s * 0.42;
+    case 'hover':
+      // 悬停：原地小幅摆动，偶尔挪一下
+      return s * 0.55;
+    case 'dart':
+      // 冲刺：时间周期性被压缩与拉伸
+      return s + Math.sin(s * 0.33) * 0.62;
+    default:
+      return s;
+  }
+}
+
+/** 姿态对游荡幅度的修正。 */
+function gaitWander(gait: Gait, wander: number): number {
+  if (gait === 'hover') return wander * 0.42;
+  if (gait === 'drift') return wander * 1.35;
+  if (gait === 'dart') return wander * 0.75;
+  return wander;
 }
 
 // ————————————————————————————————————————————————————————————
@@ -313,7 +388,8 @@ export interface Pose2D {
  * 而且以后改路径公式时不会忘记同步改朝向。
  */
 export function poseAt(c: Creature, t: number, out: Pose2D): Pose2D {
-  const s = t * c.speed;
+  // 姿态决定「这个生物眼里的时间」怎么走
+  const s = gaitTime(c.gait, t * c.speed);
   const step = 0.35;
 
   // ——————— 成群 ———————

@@ -25,6 +25,7 @@ import {
   type SurfaceId,
 } from '../../core/config.js';
 import { THEME_LABELS, THEME_NAMES } from '../../core/theme.js';
+import { BACKDROP_LABELS, type Backdrop } from '../../core/config.js';
 import { loadConfig, saveConfig } from '../../core/storage.js';
 import { TankRenderer } from '../../render/tank.js';
 import { Flock } from '../../core/creatures.js';
@@ -72,6 +73,24 @@ const GROUPS: Group[] = [
       { kind: 'range', path: 'opacity', label: '不透明度', min: 0.05, max: 1, step: 0.01 },
       { kind: 'range', path: 'bloom', label: '辉光', hint: '这套美术的造型手段，不建议关', min: 0, max: 2.5, step: 0.05 },
       { kind: 'range', path: 'maxCreatures', label: '最多生物数', min: 1, max: 40, step: 1 },
+      { kind: 'range', path: 'creatureScale', label: '生物尺寸', min: 0.25, max: 1.6, step: 0.02 },
+    ],
+  },
+  {
+    title: '远景',
+    note:
+      '水体本身只有一个渐变，看久了会显得空。远景给画面一个纵深参照物 —— ' +
+      '换一个就换一种气氛，是性价比最高的一种「多变」。',
+    fields: [
+      {
+        kind: 'select',
+        path: 'backdrop',
+        label: '远景',
+        options: (Object.keys(BACKDROP_LABELS) as Backdrop[]).map((b) => ({
+          value: b,
+          label: BACKDROP_LABELS[b],
+        })),
+      },
     ],
   },
   {

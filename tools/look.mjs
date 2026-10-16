@@ -38,6 +38,7 @@ function parseArgs(argv) {
     height: 900,
     bloom: true,
     scale: 0.62,
+    backdropId: 0,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -50,6 +51,7 @@ function parseArgs(argv) {
     else if (a.startsWith('--width=')) out.width = Number(a.slice(8));
     else if (a.startsWith('--height=')) out.height = Number(a.slice(9));
     else if (a.startsWith('--scale=')) out.scale = Number(a.slice(8));
+    else if (a.startsWith('--backdrop=')) out.backdropId = Number(a.slice(11));
     else if (a === '--nobloom') out.bloom = false;
     else if (a === '--help') {
       console.log(await0());
@@ -80,6 +82,7 @@ import { Flock } from './src/core/creatures.js';
 import { createTabSource } from './src/core/tabs.js';
 import { paletteFor } from './src/core/theme.js';
 
+const BACKDROP_ID = ${args.backdropId};
 const SCALE = ${args.scale};
 const THEME = ${JSON.stringify(args.theme)};
 const TIME = ${args.time};
@@ -214,6 +217,7 @@ function frame() {
   p.float('uTurbidity', palette.turbidity);
   p.int('uDetail', 2);
   p.int('uLayers', LAYERS);
+  p.int('uBackdrop', BACKDROP_ID);
   gl.disable(gl.BLEND);
   drawFullscreen(gl);
 

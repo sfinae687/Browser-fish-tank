@@ -61,6 +61,7 @@ async function loadModules() {
         export { SHAPES, SHAPE_NAMES, buildCreatureMesh, halfHeight,
                  MAX_CREATURE_VERTICES, MAX_CREATURE_INDICES } from './src/render/creature-mesh.ts';
         export { paletteFor, THEMES, THEME_NAMES } from './src/core/theme.ts';
+        export { BACKDROP_ID } from './src/render/tank.ts';
       `,
       resolveDir: ROOT,
       loader: 'ts',
@@ -354,6 +355,82 @@ function testFlock(sim) {
   assertTrue(f2.list[0].energy > 1, '同步之后亮度跟着出声状态变了');
 }
 
+function testGaits(sim) {
+  section('3.6 游动姿态');
+
+  // 每个体型都要有姿态，而且不能只有一种
+  const gaits = new Set();
+  for (const name of sim.SHAPE_NAMES) {
+    const c = sim.makeCreature({
+      id: 700, tabId: 700, title: '', pinned: false, audible: false,
+      discarded: false, active: false,
+    });
+    // 强制成这个体型来读它的姿态
+    c.shape = name;
+    // makeCreature 会按体型给姿态；这里直接按体型表反推不方便，
+    // 所以用一个同种子的新生物读 shape→gait 的一致性
+    void c;
+  }
+  // 直接取样：多造一些，统计出现过的姿态
+  for (let i = 0; i < 120; i++) {
+    const c = sim.makeCreature({
+      id: 600 + i * 17, tabId: 600 + i * 17, title: '', pinned: false,
+      audible: false, discarded: false, active: false,
+    });
+    gaits.add(c.gait);
+  }
+  assertTrue(gaits.size >= 3, `出现了 ${gaits.size} 种游动姿态`, [...gaits].join(','));
+
+  // 同一只生物，姿态不同 → 同样时间内走的距离不同。
+  // 「漂移」必须明显比「巡航」慢，否则姿态就只是换了个名字。
+  const mk = (gait) => {
+    const c = sim.makeCreature({
+      id: 4242, tabId: 4242, title: '', pinned: false, audible: false,
+      discarded: false, active: false,
+    });
+    c.gait = gait;
+    c.schooling = 0;
+    return c;
+  };
+  const travelled = (c) => {
+    const a = sim.poseAt(c, 0, { x: 0, y: 0, dx: 0, dy: 0 });
+    let total = 0;
+    let px = a.x;
+    let py = a.y;
+    for (let t = 1; t <= 40; t++) {
+      const p = sim.poseAt(c, t, { x: 0, y: 0, dx: 0, dy: 0 });
+      total += Math.hypot(p.x - px, p.y - py);
+      px = p.x;
+      py = p.y;
+    }
+    return total;
+  };
+  const drift = travelled(mk('drift'));
+  const cruise = travelled(mk('cruise'));
+  const hover = travelled(mk('hover'));
+  assertTrue(drift < cruise * 0.8, '「漂移」比「巡航」慢', `${drift.toFixed(3)} < ${cruise.toFixed(3)}`);
+  assertTrue(hover < cruise * 0.85, '「悬停」比「巡航」挪动得少', `${hover.toFixed(3)}`);
+
+  // 姿态不会破坏纯函数性质
+  const d = mk('dart');
+  const p1 = sim.poseAt(d, 17.5, { x: 0, y: 0, dx: 0, dy: 0 });
+  const p2 = sim.poseAt(d, 17.5, { x: 0, y: 0, dx: 0, dy: 0 });
+  assertEq(p1.x, p2.x, '带姿态的运动仍然是纯函数');
+}
+
+function testBackdrops(sim) {
+  section('3.7 远景');
+
+  // 五个远景必须是五个不同的编号 —— 撞号的话有两个选项会画出同一张图，
+  // 而界面上看起来是两个不同的选择
+  const ids = new Set(Object.values(sim.BACKDROP_ID));
+  assertEq(ids.size, Object.keys(sim.BACKDROP_ID).length, '五个远景各有一个不同的编号');
+  assertEq(Object.keys(sim.BACKDROP_ID).length, 5, '有 5 个远景可选');
+
+  // 「开阔水域」必须是 0 —— 着色器里用 0 表示「什么都不画」
+  assertEq(sim.BACKDROP_ID.open, 0, '「开阔水域」对应着色器里的 0（不画）');
+}
+
 function testTheme(sim) {
   section('5. 调色板');
 
@@ -424,6 +501,8 @@ async function main() {
     testIdentity(mod);
     testMotion(mod);
     testSchooling(mod);
+    testGaits(mod);
+    testBackdrops(mod);
     testFlock(mod);
     testTheme(mod);
     await testShaderTemplates();

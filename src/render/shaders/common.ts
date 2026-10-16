@@ -34,6 +34,10 @@ float hash21(vec2 p) {
   return fract(p.x * p.y);
 }
 
+float hash11(float x) {
+  return fract(sin(x * 127.1) * 43758.5453);
+}
+
 float vnoise(vec2 p) {
   vec2 i = floor(p);
   vec2 f = fract(p);

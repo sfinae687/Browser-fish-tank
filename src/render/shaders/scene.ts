@@ -74,6 +74,8 @@ uniform float uAmbient;
 uniform float uTurbidity;
 uniform int   uDetail;
 uniform int   uLayers;
+/** 远景种类：0 开阔 / 1 海沟 / 2 沉降雪原 / 3 热泉 / 4 遗迹 */
+uniform int   uBackdrop;
 
 ${COMMON_GLSL}
 
@@ -86,6 +88,124 @@ ${COMMON_GLSL}
  */
 float depthAt(vec2 t) {
   return clamp(t.y, 0.0, 1.0);
+}
+
+/**
+ * 远景。
+ *
+ * ## 三条硬约束
+ *
+ * **一、剪影必须是近黑的。** 远景比近景亮会让画面**失去纵深** ——
+ * 人对距离的感知很大一部分来自「远处的东西被水吸收得更狠」。
+ *
+ * **二、只在边缘留一点点被照亮。** 剪影平涂会像贴纸；
+ * 只有左缘（朝向光源那一侧）有一线微光，它才会从水里「切」出来。
+ *
+ * **三、亮度上限由调用方兜底。** 这一层是**背景**，
+ * 生物才是主角。远景的对比度稍微高一点，画面立刻变吵。
+ *
+ * 输出两个量：
+ *   cover  遮挡程度，用来把水体颜色换掉（不是叠加）
+ *   tint   加在遮挡结果上的颜色（边缘光、热泉的余晖）
+ */
+void backdropLayer(
+  int kind,
+  vec2 t,
+  float aspect,
+  float time,
+  float seed,
+  vec3 light,
+  float ambient,
+  out float cover,
+  out vec3 tint
+) {
+  cover = 0.0;
+  tint = vec3(0.0);
+  if (kind == 0) return; // 开阔水域：什么都没有，最安静
+
+  float x = t.x * aspect;
+
+  if (kind == 1) {
+    // ——— 海沟：右侧一道黑压压的崖壁 ———
+    // 边缘用 fbm 扰动，免得是一条数学直线
+    // 崖壁推得更远一些：占满右半屏会显得它很近，而「远处的崖壁」
+    // 才是这一层想要的
+    float wob = (fbm(vec2(t.y * 2.6 + seed * 1.7, 5.3), 3) - 0.5) * 0.46;
+    // 再叠一层高频，免得边缘只是一条缓慢起伏的曲线
+    wob += (fbm(vec2(t.y * 9.0 + seed, 17.0), 2) - 0.5) * 0.07;
+    float edge = 0.74 + wob;
+    cover = smoothstep(edge - 0.02, edge + 0.02, x);
+    // 只有朝向光源的那一侧有边缘光，而且**沿高度明暗不均** ——
+    // 一条均匀的亮边会像画上去的描边，不均匀才像岩体被斜照
+    float lit = 0.45 + 0.55 * fbm(vec2(t.y * 3.4 + seed, 11.0), 3);
+    float rim = smoothstep(edge - 0.045, edge, x) * (1.0 - smoothstep(edge, edge + 0.07, x));
+    // 崖壁内部极淡的起伏，暗示岩体而不是一块纯黑板
+    float rock = fbm(vec2(x * 11.0, t.y * 7.0 + seed), 3);
+    tint = light * (rim * lit * 0.45 + rock * 0.03 * cover) * ambient;
+    return;
+  }
+
+  if (kind == 2) {
+    // ——— 沉降雪原：密集的有机碎屑在缓缓落下 ———
+    // 这一层不遮挡，它是**加**上去的。密度比默认的海雪高得多，
+    // 于是整片水看起来像在下雪 —— 这是最深的一种「下雪感」。
+    vec2 p = vec2(x, t.y * 0.55);
+    vec2 gv = p * 62.0;
+    vec2 id = floor(gv);
+    vec2 f = fract(gv) - 0.5;
+    float h = hash21(id);
+    if (h < 0.62) return;
+    float fall = fract(h * 13.7 + time * (0.004 + h * 0.006));
+    vec2 pos = vec2((h - 0.5) * 0.75 + sin(time * 0.08 + h * 20.0) * 0.08, fall - 0.5);
+    float d = length(f - pos);
+    float mote = smoothstep(0.05 + h * 0.03, 0.0, d) * (0.3 + h * 0.7);
+    // 越深越暗，但整体比默认海雪亮一档
+    tint = mix(light, uCaustic, 0.35) * mote * 0.30 * (1.0 - t.y * 0.55);
+    return;
+  }
+
+  if (kind == 3) {
+    // ——— 热泉喷口：几缕上升的黑烟 ———
+    // 「黑烟」的关键是它**比水更黑**：遮挡水体，但自己不发光。
+    // 只在最底部有一点热液口的余晖。
+    float plume = 0.0;
+    float glow = 0.0;
+    for (int i = 0; i < 3; i++) {
+      float fi = float(i);
+      float cx = 0.22 + fi * 0.27 + (hash11(fi * 3.7 + seed) - 0.5) * 0.10;
+      // 烟柱往上散开
+      float spread = 0.018 + t.y * 0.10;
+      float dx = (x - cx) / spread;
+      float n = fbm(vec2(dx * 1.7, t.y * 3.4 + time * 0.05 + fi * 5.0), 3);
+      // 底浓上淡
+      float body = exp(-dx * dx) * smoothstep(1.05, 0.18, t.y) * smoothstep(0.28, 0.62, n);
+      plume = max(plume, body);
+      // 喷口本身：贴着画面底部一点点暖光（热的矿物水在发光）
+      glow = max(glow, exp(-dx * dx * 3.0) * smoothstep(0.14, 0.02, t.y));
+    }
+    cover = clamp(plume, 0.0, 0.85);
+    tint = light * (glow * 0.55 + plume * 0.05) * ambient;
+    return;
+  }
+
+  // ——— 遗迹：几根倾颓的柱子 ———
+  float body = 0.0;
+  float rim = 0.0;
+  for (int i = 0; i < 4; i++) {
+    float fi = float(i);
+    float cx = 0.16 + fi * 0.20 + (hash11(fi * 5.3 + seed) - 0.5) * 0.07;
+    float w = 0.018 + hash11(fi * 9.1 + seed) * 0.016;
+    // 断口高度不一 —— 齐刷刷一样高就不像废墟了
+    float top = 0.34 + hash11(fi * 13.7 + seed) * 0.26;
+    // 柱子越往下越收（透视）
+    float halfW = w * (1.0 - t.y * 0.25);
+    float inside = step(abs(x - cx), halfW) * step(top, t.y);
+    body = max(body, inside);
+    float edge = smoothstep(halfW + 0.006, halfW, abs(x - cx));
+    rim = max(rim, edge * step(top, t.y));
+  }
+  cover = body;
+  tint = light * (rim * 0.30 + body * 0.02) * ambient;
 }
 
 void main() {
@@ -152,6 +272,22 @@ void main() {
                + sin(t.x * uAspect * 3.1 - uTime * 0.22) * 0.0026;
     float line = smoothstep(0.010, 0.0, abs(t.y - 0.030 - wave));
     col += uLight * line * 0.10 * uAmbient;
+  }
+
+  // ——————— 6.5 远景 ———————
+  //
+  // 放在水体与光之后、暗角之前：远景要被水吸收（所以受浑浊度影响），
+  // 但也要被暗角压住（所以不能放到最后）。
+  {
+    float cover;
+    vec3 tint;
+    backdropLayer(uBackdrop, t, uAspect, uTime, uSeed, uLight, uAmbient, cover, tint);
+    if (cover > 0.001) {
+      // 遮挡用的是「更黑的水」，不是纯黑 —— 纯黑在暗色背景上会显得像挖了个洞
+      vec3 occluded = uWaterDeep * 0.28;
+      col = mix(col, occluded, cover);
+    }
+    col += tint;
   }
 
   // ——————— 7. 浑浊与暗角 ———————

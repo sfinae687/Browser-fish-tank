@@ -51,7 +51,21 @@ import { BRIGHT_FS, BLUR_FS, COMPOSITE_FS } from './shaders/post.js';
 import { CreatureRenderer } from './creatures.js';
 import type { Creature } from '../core/creatures.js';
 import type { Palette } from '../core/theme.js';
-import type { AnchorY, Framing, LayerToggles, ResolvedQuality } from '../core/config.js';
+import type { AnchorY, Backdrop, Framing, LayerToggles, ResolvedQuality } from '../core/config.js';
+
+/**
+ * 远景名 → 着色器里的编号。
+ *
+ * 用编号而不是字符串，因为这是一条逐像素走的热路径；
+ * 而这个映射在编译期就固定了。
+ */
+export const BACKDROP_ID: Record<Backdrop, number> = {
+  open: 0,
+  trench: 1,
+  snowfield: 2,
+  vent: 3,
+  ruins: 4,
+};
 
 /** 水面在缸内的 y。略大于 0 —— 留一条水面线。 */
 const WATER_LINE = 0.035;
@@ -85,7 +99,7 @@ export interface TankFrame {
   /** 生物尺寸倍率 */
   creatureScale: number;
   /** 可选远景 */
-  backdrop?: string;
+  backdrop?: Backdrop;
 }
 
 /**
@@ -258,6 +272,7 @@ export class TankRenderer {
     p.float('uTurbidity', frame.palette.turbidity);
     p.int('uDetail', frame.quality.detail);
     p.int('uLayers', mask);
+    p.int('uBackdrop', BACKDROP_ID[frame.backdrop ?? 'open'] ?? 0);
     drawFullscreen(gl);
 
     // ——————— 2. 发光生物（同一个目标，画在水体之上）———————
