@@ -590,25 +590,62 @@ export function buildCreatureMesh(shape: CreatureShape): CreatureMeshData {
   };
 
   // ——————— 尾鳍 ———————
+  //
   // 先画，身体后画 —— 后画的盖在上面，尾根与身体的接缝被藏住。
+  //
+  // ⚠️ 外缘用**二次贝塞尔**采出平滑曲线，不能只给四个角点。
+  // 四个角点拼出来的是几个硬邦邦的三角形，放大看立刻露馅 ——
+  // 「更好的尾鳍」说的就是这件事。
+  //
+  // 拓扑是「从尾根扇形展开」：缺口比两叶的尖端更靠近尾根，
+  // 所以整个轮廓相对尾根是星形的，扇形展开一定不会自交。
   {
-    const base = 0;
     const span = H * shape.tailSpan;
     const back = H * 1.15;
-    const fork = shape.tailFork;
-    // 五个点：上尖 / 上内 / 中 / 下内 / 下尖。
-    // 中间的缺口由 2/3 两点向尾根方向收进来形成 —— 这就是「分叉」。
-    // ly 从 −0.35 起：让尾鳍**向前压住**尾柄，而不是从尾柄末端才开始，
-    // 这是修掉「尾鳍看起来脱落」的第二个关键（第一个是加粗尾柄）。
-    push(segs, 0, -H * 0.35, 1.0, 0.0, 0, 0.12, 0.0);
-    push(segs, span * 0.55, back, 1.0, 1.0, 0, 0.55, 1.0);
-    push(segs, span * 0.34, back * (1.0 - fork * 0.6), 1.0, 0.6, 0, 0.38, 0.72);
-    push(segs, -span * 0.34, back * (1.0 - fork * 0.6), 1.0, -0.6, 0, 0.38, 0.72);
-    push(segs, -span * 0.55, back, 1.0, -1.0, 0, 0.55, 1.0);
+    // 缺口深度由 tailFork 决定：0 = 圆尾（缺口几乎贴着尖端），1 = 深叉
+    const notch = back * (1 - shape.tailFork * 0.72);
+    const root: readonly [number, number] = [0, -H * 0.30];
+    const upTip: readonly [number, number] = [span * 0.62, back];
+    const upNotch: readonly [number, number] = [0, notch];
+    const loTip: readonly [number, number] = [-span * 0.62, back];
 
-    bodyIndices.push(base, base + 1, base + 2);
-    bodyIndices.push(base, base + 2, base + 3);
-    bodyIndices.push(base, base + 3, base + 4);
+    const outline: Array<readonly [number, number]> = [root];
+    const bez = (
+      p0: readonly [number, number],
+      c: readonly [number, number],
+      p1: readonly [number, number],
+      n: number,
+    ): void => {
+      for (let i = 1; i <= n; i++) {
+        const t = i / n;
+        const mt = 1 - t;
+        outline.push([
+          mt * mt * p0[0] + 2 * mt * t * c[0] + t * t * p1[0],
+          mt * mt * p0[1] + 2 * mt * t * c[1] + t * t * p1[1],
+        ]);
+      }
+    };
+    // 根部 → 上尖（前缘，向外鼓）
+    bez(root, [span * 0.36, back * 0.28], upTip, 4);
+    // 上尖 → 缺口（后缘，向内收）
+    bez(upTip, [span * 0.20, back * 0.74], upNotch, 4);
+    // 缺口 → 下尖
+    bez(upNotch, [-span * 0.20, back * 0.74], loTip, 4);
+    // 下尖 → 根部
+    bez(loTip, [-span * 0.36, back * 0.28], root, 4);
+
+    const base = vertices.length / CREATURE_FLOATS_PER_VERTEX;
+    // 圆心：尾根。v = 0，不参与边缘光
+    push(segs, 0, root[1], 1.0, 0.0, 0, 0.10, 0.0);
+    for (const [x, y] of outline) {
+      // v 用来区分上下叶（片元里做明暗），发光量向尖端递增
+      const lobe = Math.abs(y - root[1]) < 1e-4 ? 0 : x >= 0 ? 1 : -1;
+      const amt = 0.18 + 0.5 * Math.min(1, Math.abs(y - root[1]) / Math.max(1e-6, back));
+      push(segs, x, y, 1.0, lobe, 0, amt, 0.85);
+    }
+    for (let i = 1; i < outline.length; i++) {
+      bodyIndices.push(base, base + i, base + i + 1);
+    }
   }
 
   // ——————— 背鳍 ———————
