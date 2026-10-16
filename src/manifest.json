@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "计算水族箱",
+  "version": "0.1.0",
+  "description": "一个由算法生成的生态鱼缸。每一株珊瑚、每一条鱼都是某个种子算出来的结果，而不是贴图。",
+  "minimum_chrome_version": "114",
+
+  "permissions": ["storage", "scripting"],
+
+  "optional_host_permissions": ["<all_urls>"],
+
+  "background": {
+    "service_worker": "bg/service-worker.js",
+    "type": "module"
+  },
+
+  "action": {
+    "default_title": "计算水族箱 · 设置",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+
+  "options_page": "options/index.html",
+
+  "chrome_url_overrides": {
+    "newtab": "newtab/index.html"
+  }
+}

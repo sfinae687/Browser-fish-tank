@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>计算水族箱 · 设置</title>
+    <link rel="stylesheet" href="./options.css" />
+  </head>
+  <body>
+    <div class="app">
+      <!-- 实时预览。调不透明度、主题、构图时没有它就是在盲调。 -->
+      <aside class="preview">
+        <div class="preview__frame">
+          <canvas id="preview-canvas"></canvas>
+          <div id="preview-error" class="preview__error" hidden></div>
+        </div>
+
+        <div class="preview__bar">
+          <div class="preview__which" id="preview-which">新标签页</div>
+          <div class="preview__seed" id="preview-seed">—</div>
+        </div>
+
+        <p class="preview__note" id="preview-note">
+          预览使用该表面自己的配置渲染，与真实效果一致。
+        </p>
+      </aside>
+
+      <main class="panel">
+        <header class="panel__head">
+          <div>
+            <h1 class="panel__title">计算水族箱</h1>
+            <p class="panel__sub">鱼缸不是被画出来的，是被算出来的。</p>
+          </div>
+          <div class="panel__badge" id="backend-badge">存储：—</div>
+        </header>
+
+        <nav class="tabs" id="tabs" role="tablist"></nav>
+
+        <div class="sections" id="sections"></div>
+
+        <footer class="panel__foot">
+          <span id="save-state" class="save-state">已保存</span>
+        </footer>
+      </main>
+    </div>
+
+    <script type="module" src="./options.js"></script>
+  </body>
+</html>
