@@ -10,7 +10,8 @@
     "dev": "node build.mjs --watch",
     "typecheck": "tsc --noEmit",
     "verify": "node tools/verify.mjs",
-    "test": "node tools/test.mjs"
+    "test": "node tools/test.mjs",
+    "build:site": "node build-site.mjs"
   },
   "devDependencies": {
     "@types/chrome": "^0.1.28",

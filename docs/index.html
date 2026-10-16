@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta name="repo-url" content="https://github.com/example/deep-sea" />
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>深海 · 一个标签页 = 一只发光生物</title>
+    <meta
+      name="description"
+      content="一个 Chromium 新标签页扩展：打开的每个标签页都是水里的一只发光生物。休眠的会暗下去，出声的会亮起来，点一下就能切过去。"
+    />
+    <link rel="stylesheet" href="site.css" />
+  </head>
+  <body>
+    <!-- ——————————————— 首屏 ——————————————— -->
+    <header class="hero">
+      <canvas id="hero-tank" class="hero__canvas"></canvas>
+      <div class="hero__veil"></div>
+      <div class="hero__content">
+        <p class="hero__eyebrow">Chromium 新标签页扩展</p>
+        <h1 class="hero__title">深海</h1>
+        <p class="hero__sub">
+          你打开的每个标签页，都是水里的一只发光生物。
+        </p>
+        <p class="hero__hint" id="hero-hint">
+          <span class="hero__dot"></span>
+          把鼠标移到生物上看看 · 点一下能切过去
+        </p>
+      </div>
+      <div class="hero__scroll" aria-hidden="true">↓</div>
+    </header>
+
+    <main>
+      <!-- ——————————————— 核心概念 ——————————————— -->
+      <section class="section section--concept">
+        <div class="wrap">
+          <h2 class="section__title">一个标签页 = 一只发光生物</h2>
+          <p class="section__lede">
+            这不是一个屏保，也不是一个装饰。它同时是一个
+            <strong>可视化的标签页管理器</strong> ——
+            你不需要去数标签栏，看一眼水里就知道自己开了多少、哪些在吵、哪些可以关。
+          </p>
+
+          <div class="legend">
+            <div class="legend__item">
+              <span class="legend__swatch legend__swatch--normal"></span>
+              <div>
+                <b>普通标签页</b>
+                <span>正常游动</span>
+              </div>
+            </div>
+            <div class="legend__item">
+              <span class="legend__swatch legend__swatch--discarded"></span>
+              <div>
+                <b>休眠 / 已丢弃</b>
+                <span>暗淡蛰伏，几乎不动 —— 一眼看出哪些可以关掉</span>
+              </div>
+            </div>
+            <div class="legend__item">
+              <span class="legend__swatch legend__swatch--audible"></span>
+              <div>
+                <b>正在出声</b>
+                <span>辉光脉动，明显更亮 —— 比找那个小喇叭图标直观</span>
+              </div>
+            </div>
+            <div class="legend__item">
+              <span class="legend__swatch legend__swatch--pinned"></span>
+              <div>
+                <b>已固定</b>
+                <span>体型更大、活动范围更窄，有领地感</span>
+              </div>
+            </div>
+          </div>
+
+          <figure class="frame frame--wide">
+            <canvas class="frame__canvas" data-theme="abyss" data-backdrop="open" data-n="14"></canvas>
+            <figcaption>
+              下面这片水里，「固定的」更大、「休眠的」发暗、「出声的」更亮。
+              每一只对应一个标签页 —— 演示用的是假数据，真实扩展里是你自己的标签页。
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- ——————————————— 主题 ——————————————— -->
+      <section class="section">
+        <div class="wrap">
+          <h2 class="section__title">四种气氛</h2>
+          <p class="section__lede">
+            都在「近黑水体 + 冷光 + 发光生物」这个框架内，只换气氛不换风格。
+          </p>
+          <div class="grid grid--4" id="themes"></div>
+        </div>
+      </section>
+
+      <!-- ——————————————— 远景 ——————————————— -->
+      <section class="section">
+        <div class="wrap">
+          <h2 class="section__title">五种远景</h2>
+          <p class="section__lede">
+            水体本身只有一个渐变，看久了会显得空。远景给画面一个纵深参照物 ——
+            换一个就换一种气氛。
+          </p>
+          <div class="grid grid--3" id="backdrops"></div>
+        </div>
+      </section>
+
+      <!-- ——————————————— 生物 ——————————————— -->
+      <section class="section">
+        <div class="wrap">
+          <h2 class="section__title">六种生物</h2>
+          <p class="section__lede">
+            形状是<strong>设计</strong>出来的，不是随机采样出来的 ——
+            参数在区间里随机组合的结果，是每一只的比例都「差一点」，
+            而且放在一起互相打架。
+          </p>
+          <div class="grid grid--3" id="species"></div>
+        </div>
+      </section>
+
+      <!-- ——————————————— 安装 ——————————————— -->
+      <section class="section section--install">
+        <div class="wrap">
+          <h2 class="section__title">装上它</h2>
+          <p class="section__lede">
+            一个 Chromium MV3 扩展，新标签页与页面覆盖层两个表面各自独立配置。
+            不联网、不收集任何数据。
+          </p>
+          <ol class="steps">
+            <li><span>克隆仓库，<code>pnpm install &amp;&amp; pnpm build</code></span></li>
+            <li><span>打开 <code>chrome://extensions</code>，开启开发者模式</span></li>
+            <li><span>「加载已解压的扩展程序」选择 <code>dist/</code> 目录</span></li>
+            <li><span>打开一个新标签页</span></li>
+          </ol>
+          <a class="btn" id="repo-link" href="https://github.com/" rel="noopener">在 GitHub 上查看</a>
+          <p class="fineprint">
+            覆盖层需要在设置页里主动启用并授予 <code>&lt;all_urls&gt;</code> 权限 ——
+            「读取标签页标题」也是可选的，不授权时生物照常可见可点，只是没有标题。
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="wrap foot__inner">
+        <span>深海 · 由着色器与算法生成，没有任何贴图</span>
+        <span id="foot-renderer"></span>
+      </div>
+    </footer>
+
+    <script type="module" src="site.js"></script>
+  </body>
+</html>
